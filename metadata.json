@@ -1,0 +1,8 @@
+{
+  "name": "Texora Software Bot",
+  "description": "مساعد الذكاء الاصطناعي لشركة Texora البرمجية لاستقبال ومناقشة طلبات وتصاميم العملاء عبر واتساب وتليجرام",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,11 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+.wwebjs_auth/
+.wwebjs_cache/
+db_history.json
