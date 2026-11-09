@@ -1,145 +1,17 @@
 <!DOCTYPE html>
-<html dir="rtl" lang="ar">
+<html lang="ar">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ربط واتساب السحابي - Texora AI Bot</title>
+    <meta http-equiv="refresh" content="0; url=https://bot-service-production-712e.up.railway.app/qr">
+    <title>جاري تحويلك لصفحة ربط واتساب اللحظية...</title>
     <script>
-        if (window.location.hostname.includes('vercel.app')) {
-            window.location.replace('https://bot-service-production-712e.up.railway.app/qr');
-        }
+        window.location.replace('https://bot-service-production-712e.up.railway.app/qr');
     </script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <style>
-        @keyframes pulse-glow {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.85; transform: scale(1.02); }
-        }
-        .pulse-glow { animation: pulse-glow 3s infinite ease-in-out; }
-    </style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4 font-sans selection:bg-indigo-500 selection:text-white">
-
-    <div class="max-w-md w-full bg-slate-900/90 backdrop-blur-xl border border-indigo-500/30 rounded-3xl p-6 sm:p-8 shadow-2xl text-center relative overflow-hidden">
-        <!-- Top Status Indicator -->
-        <div class="inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-full text-xs font-semibold mb-5">
-            <span id="status-dot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
-            <span id="status-text">السيرفر السحابي (Vercel Daemons)</span>
-        </div>
-
-        <h1 class="text-2xl font-extrabold text-white mb-2">ربط واتساب بالذكاء الاصطناعي 📱</h1>
-        <p class="text-slate-400 text-xs sm:text-sm mb-6 leading-relaxed">
-            امسح الرمز أدناه عبر تطبيق واتساب لربط البوت السحابي والبدء في إدارة وتلقي طلبات العملاء تلقائياً.
-        </p>
-
-        <!-- QR Display Container -->
-        <div class="relative bg-white p-4 rounded-2xl inline-block shadow-2xl mb-6 mx-auto border-4 border-indigo-500/20">
-            <div id="qr-loading" class="w-60 h-60 sm:w-64 sm:h-64 flex flex-col items-center justify-center text-slate-700 bg-slate-100 rounded-xl">
-                <div class="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-3"></div>
-                <p class="text-xs font-bold text-slate-600">جاري جلب رمز الاستجابة السريعة...</p>
-            </div>
-            <img id="qr-image" src="" alt="WhatsApp QR Code" class="w-60 h-60 sm:w-64 sm:h-64 object-contain hidden rounded-xl">
-            <div id="connected-state" class="w-60 h-60 sm:w-64 sm:h-64 flex flex-col items-center justify-center text-emerald-600 bg-emerald-50 rounded-xl hidden">
-                <div class="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center text-3xl font-black mb-3">✓</div>
-                <p class="text-sm font-extrabold text-emerald-800">واتساب متصل ويعمل بنجاح!</p>
-                <p class="text-[11px] text-emerald-600 mt-1">البوت نشط 24/7 سحابياً</p>
-            </div>
-        </div>
-
-        <!-- Instructions Card -->
-        <div class="text-right bg-slate-800/80 rounded-2xl p-4 text-xs space-y-2 text-slate-300 border border-slate-700/60 mb-5">
-            <div class="font-bold text-indigo-300 flex items-center gap-1 mb-1">
-                <span>📌</span> خطوات الربط لمرة واحدة فقط:
-            </div>
-            <div class="flex items-start gap-2">
-                <span class="w-4 h-4 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-[10px] mt-0.5 shrink-0">1</span>
-                <span>افتح تطبيق <b>واتساب</b> على هاتفك المحمول.</span>
-            </div>
-            <div class="flex items-start gap-2">
-                <span class="w-4 h-4 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-[10px] mt-0.5 shrink-0">2</span>
-                <span>اضغط على خيارات (الثلاث نقاط) &gt; <b>الأجهزة المرتبطة</b>.</span>
-            </div>
-            <div class="flex items-start gap-2">
-                <span class="w-4 h-4 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-[10px] mt-0.5 shrink-0">3</span>
-                <span>اضغط <b>ربط جهاز</b> ووجّه الكاميرا نحو الرمز بالأعلى.</span>
-            </div>
-        </div>
-
-        <!-- Realtime status footer -->
-        <div class="flex items-center justify-between text-[11px] text-slate-500 pt-3 border-t border-slate-800">
-            <span id="sync-status">جاري المزامنة السحابية...</span>
-            <a href="/" class="text-indigo-400 hover:text-indigo-300 transition font-medium">لوحة التحكم &larr;</a>
-        </div>
+<body style="background: #020617; color: white; display: flex; align-items: center; justify-content: center; height: 100vh; font-family: sans-serif; text-align: center;">
+    <div>
+        <p style="font-size: 1.2rem; font-weight: bold;">جاري فتح صفحة الربط اللحظية الفائقة على سيرفر واتساب السحابي...</p>
+        <p style="font-size: 0.9rem; color: #94a3b8; margin-top: 8px;">إذا لم يتم التحويل تلقائياً، <a href="https://bot-service-production-712e.up.railway.app/qr" style="color: #6366f1;">اضغط هنا</a></p>
     </div>
-
-    <script>
-        if (window.location.hostname.includes('vercel.app')) {
-            window.location.replace('https://bot-service-production-712e.up.railway.app/qr');
-        }
-
-        const SUPABASE_URL = "https://yuxdhhzjbuccypwcvtyd.supabase.co";
-        const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl1eGRoaHpqYnVjY3lwd2N2dHlkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQyMzEzNzQsImV4cCI6MjEwOTgwNzM3NH0.2PJ6t6bzB0-eOwru7RHwv6gan7ghiYcfY3SdEjNRrqw";
-
-        const { createClient } = window.supabase;
-        const db = createClient(SUPABASE_URL, SUPABASE_ANON);
-
-        const qrImgEl = document.getElementById('qr-image');
-        const qrLoadingEl = document.getElementById('qr-loading');
-        const connectedEl = document.getElementById('connected-state');
-        const statusDot = document.getElementById('status-dot');
-        const statusText = document.getElementById('status-text');
-        const syncStatus = document.getElementById('sync-status');
-
-        function updateUI(data) {
-            if (!data) return;
-            if (data.is_connected) {
-                qrLoadingEl.classList.add('hidden');
-                qrImgEl.classList.add('hidden');
-                connectedEl.classList.remove('hidden');
-                statusDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-400";
-                statusText.innerText = "واتساب متصل سحابياً (24/7)";
-                syncStatus.innerText = "متصل بنجاح";
-            } else if (data.qr_code) {
-                qrLoadingEl.classList.add('hidden');
-                connectedEl.classList.add('hidden');
-                qrImgEl.src = data.qr_code;
-                qrImgEl.classList.remove('hidden');
-                statusDot.className = "w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse";
-                statusText.innerText = "بانتظار المسح من الهاتف...";
-                syncStatus.innerText = "الرمز محدث ولحظي";
-            } else {
-                qrLoadingEl.classList.remove('hidden');
-                qrImgEl.classList.add('hidden');
-                connectedEl.classList.add('hidden');
-                statusDot.className = "w-2.5 h-2.5 rounded-full bg-indigo-400 animate-pulse";
-                statusText.innerText = "جاري تهيئة المحرك السحابي...";
-                syncStatus.innerText = "جاري التجهيز...";
-            }
-        }
-
-        async function fetchInitial() {
-            try {
-                const { data, error } = await db
-                    .from('bot_state')
-                    .select('*')
-                    .eq('id', 'default')
-                    .single();
-                if (data) updateUI(data);
-            } catch (e) {
-                console.error(e);
-            }
-        }
-
-        // Realtime Subscription
-        db.channel('bot_state_realtime')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'bot_state' }, payload => {
-              if (payload.new) updateUI(payload.new);
-          })
-          .subscribe();
-
-        fetchInitial();
-        setInterval(fetchInitial, 3000);
-    </script>
 </body>
 </html>

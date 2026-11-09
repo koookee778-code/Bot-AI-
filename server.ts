@@ -104,7 +104,9 @@ let whatsappClient: any = null;
 let qrCodeDataUrl: string | null = null;
 let isWhatsappConnected = false;
 let lastQrTimestamp: number = 0;
-let isRefreshingQR: boolean = false;
+let lastClientStartTime: number = 0;
+let startupSafetyTimer: NodeJS.Timeout | null = null;
+let lastRefreshAttempt: number = 0;
 let lastTelegramQrSentAt: number = 0;
 
 export interface ClientLead {
@@ -1683,6 +1685,15 @@ async function startServer() {
         if (isStartingWhatsApp) return { message: 'Already starting/started' };
 
         isStartingWhatsApp = true;
+        lastClientStartTime = Date.now();
+        if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
+        startupSafetyTimer = setTimeout(() => {
+            if (isStartingWhatsApp && !isWhatsappConnected) {
+                console.warn("[WhatsApp Watchdog] 45s startup safety timeout triggered. Resetting isStartingWhatsApp.");
+                isStartingWhatsApp = false;
+            }
+        }, 45000);
+
         try {
             console.log("[WhatsApp] Initializing WhatsApp permanent client...");
             
@@ -1703,7 +1714,7 @@ async function startServer() {
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
                     headless: true,
-                    protocolTimeout: 0,
+                    protocolTimeout: 120000,
                     args: [
                         '--no-sandbox', 
                         '--disable-setuid-sandbox',
@@ -2054,9 +2065,11 @@ async function startServer() {
             });
 
             whatsappClient.initialize().then(() => {
+                if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
                 isStartingWhatsApp = false;
                 console.log("[WhatsApp] Client initialization completed successfully.");
             }).catch(err => {
+                if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
                 console.error("WhatsApp Initialization Error:", err);
                 isStartingWhatsApp = false;
                 if (whatsappClient) {
@@ -2069,6 +2082,7 @@ async function startServer() {
             });
             return { success: true };
         } catch (e: any) {
+            if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
             whatsappClient = null;
             isStartingWhatsApp = false;
             return { error: e.message };
@@ -2087,100 +2101,137 @@ async function startServer() {
         }
     }, 25000);
 
+    async function restartWhatsappClient(cleanAuth = false) {
+        console.log(`[WhatsApp] Performing clean client restart (cleanAuth: ${cleanAuth})...`);
+        if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
+        isStartingWhatsApp = false;
+        if (whatsappClient) {
+            try {
+                await whatsappClient.destroy();
+            } catch (e: any) {
+                console.warn("[WhatsApp] Error destroying client:", e?.message);
+            }
+            whatsappClient = null;
+        }
+        killOrphanedChromeProcesses();
+        cleanAllChromiumLocks();
+        if (cleanAuth) {
+            const authPath = path.join(process.cwd(), '.wwebjs_auth');
+            try {
+                fs.rmSync(authPath, { recursive: true, force: true });
+                console.log("[WhatsApp] Wiped stale .wwebjs_auth directory.");
+            } catch (e) {}
+            hasSavedSession = false;
+            saveConfigToDisk();
+        }
+        qrCodeDataUrl = null;
+        lastQrTimestamp = 0;
+        return startWhatsappClient();
+    }
+
     // Dedicated Live QR Code Renewal Engine
     async function triggerQrRefresh(reason = 'manual') {
-        if (isRefreshingQR || isWhatsappConnected) return;
+        const now = Date.now();
+        if (isWhatsappConnected) return;
+        if (now - lastRefreshAttempt < 4000) return; // Throttle to max once every 4 seconds
+        lastRefreshAttempt = now;
+
         if (!whatsappClient) {
-            console.log(`[WhatsApp QR Refresh] Client offline, launching startup (${reason})...`);
-            startWhatsappClient().catch(() => {});
+            if (!isStartingWhatsApp) {
+                console.log(`[WhatsApp QR Refresh] Client offline, launching startup (${reason})...`);
+                startWhatsappClient().catch(() => {});
+            }
             return;
         }
 
         const pupPage = (whatsappClient as any).pupPage;
-        if (!pupPage || typeof pupPage.evaluate !== 'function') {
-            console.log(`[WhatsApp QR Refresh] pupPage not yet ready (${reason}).`);
+        if (!pupPage || typeof pupPage.evaluate !== 'function' || pupPage.isClosed?.()) {
+            console.log(`[WhatsApp QR Refresh] pupPage not ready or closed (${reason}).`);
+            if (now - lastClientStartTime > 35000) {
+                restartWhatsappClient().catch(() => {});
+            }
             return;
         }
 
-        isRefreshingQR = true;
         console.log(`[WhatsApp QR Refresh] Triggering live QR renewal (Reason: ${reason})...`);
 
         try {
-            // 1. WhatsApp Web AuthStore command (instant regeneration without page navigation)
-            const cmdSuccess = await pupPage.evaluate(() => {
+            // Click WhatsApp Web reload button or invoke Store refresh with 3.5s timeout
+            const refreshAction = pupPage.evaluate(() => {
                 try {
-                    if ((window as any).AuthStore?.Cmd?.refreshQR) {
-                        (window as any).AuthStore.Cmd.refreshQR();
-                        return 'AuthStore.Cmd.refreshQR';
-                    }
-                } catch (_) {}
-                try {
+                    // 1. WhatsApp Web AuthStore or Store command
                     if ((window as any).Store?.Cmd?.refreshQR) {
                         (window as any).Store.Cmd.refreshQR();
                         return 'Store.Cmd.refreshQR';
                     }
-                } catch (_) {}
-                return null;
-            }).catch(() => null);
-
-            if (cmdSuccess) {
-                console.log(`[WhatsApp QR Refresh] Success via ${cmdSuccess}!`);
-                return;
-            }
-
-            // 2. Click WhatsApp Web's reload overlay or canvas if present
-            const clickedSelector = await pupPage.evaluate(() => {
-                const selectors = [
-                    'button[aria-label*="reload" i]',
-                    'button[aria-label*="QR" i]',
-                    'span[data-icon="refresh"]',
-                    'div[role="button"]',
-                    '[data-ref]',
-                    'canvas'
-                ];
-                for (const s of selectors) {
-                    const el = document.querySelector(s);
-                    if (el) {
-                        (el as HTMLElement).click();
-                        return s;
+                    if ((window as any).AuthStore?.Cmd?.refreshQR) {
+                        (window as any).AuthStore.Cmd.refreshQR();
+                        return 'AuthStore.Cmd.refreshQR';
                     }
+                    // 2. Click WhatsApp Web's reload overlay button or canvas
+                    const selectors = [
+                        'button[aria-label*="reload" i]',
+                        'button[aria-label*="QR" i]',
+                        'span[data-icon="refresh"]',
+                        'div[role="button"][data-ref]',
+                        '[data-ref] > div[role="button"]',
+                        'div[data-ref]',
+                        'canvas'
+                    ];
+                    for (const s of selectors) {
+                        const el = document.querySelector(s);
+                        if (el) {
+                            (el as HTMLElement).click();
+                            return s;
+                        }
+                    }
+                    return 'none_found';
+                } catch (e: any) {
+                    return 'eval_err: ' + (e?.message || e);
                 }
-                return null;
-            }).catch(() => null);
-
-            if (clickedSelector) {
-                console.log(`[WhatsApp QR Refresh] Clicked reload selector: ${clickedSelector}`);
-                return;
-            }
-
-            // 3. Native Puppeteer reload as safe fallback (Non-blocking Node execution)
-            console.log("[WhatsApp QR Refresh] Executing native Puppeteer page reload...");
-            await pupPage.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch((e: any) => {
-                console.warn("[WhatsApp QR Refresh] Page reload notice:", e?.message);
             });
+
+            const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve('timeout'), 3500));
+            const result = await Promise.race([refreshAction, timeoutPromise]);
+            console.log(`[WhatsApp QR Refresh] Action result (${reason}):`, result);
+
+            // If QR is severely expired (> 75s without new QR), recreate client cleanly
+            if (lastQrTimestamp > 0 && (now - lastQrTimestamp > 75000)) {
+                console.log("[WhatsApp QR Refresh] QR severely stale (> 75s). Re-launching client cleanly...");
+                restartWhatsappClient().catch(() => {});
+            }
         } catch (err: any) {
             console.warn("[WhatsApp QR Refresh] Refresh exception:", err?.message || err);
-        } finally {
-            isRefreshingQR = false;
         }
     }
 
     // Active Dynamic QR Rotator:
-    // If waiting for pairing and current QR is older than 18 seconds, auto-refresh to keep it 100% fresh!
+    // If waiting for pairing and current QR is between 18s and 75s old, click refresh!
     setInterval(() => {
         if (whatsappClient && !isWhatsappConnected && !isStartingWhatsApp) {
-            const age = Date.now() - lastQrTimestamp;
-            if (age >= 18000) {
+            const age = lastQrTimestamp > 0 ? (Date.now() - lastQrTimestamp) : 0;
+            if (age >= 18000 && age < 80000) {
                 triggerQrRefresh(`auto_rotate_${Math.round(age / 1000)}s`).catch(() => {});
             }
         }
-    }, 3000);
+    }, 4000);
 
     app.post(['/api/whatsapp/refresh-qr', '/api/whatsapp/refresh'], async (req, res) => {
         try {
             console.log("[WhatsApp] User clicked immediate QR refresh button.");
             triggerQrRefresh('manual_user_click').catch(() => {});
             return res.json({ success: true, message: 'جاري تحديث كود الاستجابة السريعة فوراً...' });
+        } catch (err: any) {
+            res.status(500).json({ success: false, error: err?.message });
+        }
+    });
+
+    app.all('/api/whatsapp/reset', async (req, res) => {
+        try {
+            const cleanAuth = req.query.clean === 'true' || req.body?.clean === true;
+            console.log(`[WhatsApp] Full reset requested via API (cleanAuth: ${cleanAuth})...`);
+            restartWhatsappClient(cleanAuth).catch(() => {});
+            return res.json({ success: true, message: 'جاري إعادة تشغيل البوت بالكامل...' });
         } catch (err: any) {
             res.status(500).json({ success: false, error: err?.message });
         }
@@ -2606,12 +2657,14 @@ async function startServer() {
     app.all('/bot*/sendMessage', handleUniversalWebsiteOrder);
 
     app.get('/api/whatsapp-status', (req, res) => {
+        const now = Date.now();
         // If not connected and not started, auto-trigger background start
         if (!whatsappClient && !isStartingWhatsApp) {
             startWhatsappClient().catch(() => {});
         }
-        const ageSec = lastQrTimestamp > 0 ? Math.round((Date.now() - lastQrTimestamp) / 1000) : 999;
-        if (!isWhatsappConnected && (ageSec > 18 || !qrCodeDataUrl)) {
+        const ageSec = lastQrTimestamp > 0 ? Math.round((now - lastQrTimestamp) / 1000) : 999;
+        // If QR is stale or missing and client has been running for 40s+, trigger safe refresh
+        if (!isWhatsappConnected && !isStartingWhatsApp && (ageSec > 20 || !qrCodeDataUrl) && (now - lastClientStartTime > 40000)) {
             triggerQrRefresh(`status_poll_stale_${ageSec}s`).catch(() => {});
         }
         res.json({ 
@@ -2717,7 +2770,7 @@ async function startServer() {
                     
                     <!-- QR Box Container -->
                     <div id="qr-box-wrap" class="bg-white p-4 rounded-3xl inline-block shadow-2xl mb-4 mx-auto min-w-[280px] min-h-[280px] flex items-center justify-center relative border-4 border-indigo-500/20 transition-all duration-300">
-                        <img id="qr-img" src="${qrImgSrc}" alt="WhatsApp Live QR" class="w-64 h-64 object-contain rounded-2xl shadow-inner transition-opacity duration-300" style="${initialImgStyle}">
+                        <img id="qr-img" ${qrImgSrc ? `src="${qrImgSrc}"` : ''} alt="WhatsApp Live QR" class="w-64 h-64 object-contain rounded-2xl shadow-inner transition-opacity duration-300" style="${initialImgStyle}">
                         <div id="qr-spinner" class="w-64 h-64 flex flex-col items-center justify-center text-slate-700 bg-slate-50 rounded-2xl p-4" style="${initialSpinnerStyle}">
                             <div class="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-3"></div>
                             <p class="text-xs font-black text-slate-700">جاري توليد كود لحظي فائق السرعة...</p>
@@ -2730,7 +2783,7 @@ async function startServer() {
                         <div class="flex items-center justify-between text-xs text-slate-300 mb-2 font-medium">
                             <span class="flex items-center gap-1.5">
                                 <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                                <span>صلاحية الكود: <b id="countdown-sec" class="text-emerald-400 font-mono text-sm">20</b> ثانية</span>
+                                <span>صلاحية الكود: <b id="countdown-sec" class="text-emerald-400 font-mono text-sm">--</b> ثانية</span>
                             </span>
                             <button onclick="requestNewQR()" id="refresh-btn" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-3 py-1 rounded-xl transition shadow active:scale-95">
                                 🔄 تجديد الآن
@@ -2760,11 +2813,14 @@ async function startServer() {
                         </div>
                     </div>
 
-                    <!-- Footer Links -->
+                    <!-- Footer Links & Reset -->
                     <div class="flex items-center justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-800">
                         <a href="/api/whatsapp-qr.png" target="_blank" class="text-indigo-400 hover:text-indigo-300 transition font-medium">فتح الكود كصورة مباشرة ↗</a>
                         <a href="/" class="text-slate-400 hover:text-white transition">لوحة التحكم &larr;</a>
                     </div>
+                    <button onclick="requestHardReset()" class="text-[10px] text-rose-400/80 hover:text-rose-300 transition block mt-3 mx-auto">
+                        ⚠️ هل واجهت تعليقاً في الرمز؟ اضغط لإعادة ضبط وتشغيل البوت بالكامل ⚡
+                    </button>
                 </div>
 
                 <script>
@@ -2827,9 +2883,17 @@ async function startServer() {
                         } catch (err) {}
                     }
                     setInterval(pollWhatsAppStatus, 2000);
+                    // Run immediately on page open
+                    pollWhatsAppStatus();
 
-                    // 3. Countdown timer with visual progress bar
+                    // 3. Countdown timer with visual progress bar (only runs when QR is present)
                     setInterval(() => {
+                        if (!lastKnownQr) {
+                            if (countdownEl) countdownEl.innerText = '--';
+                            if (progressBar) progressBar.style.width = '100%';
+                            return;
+                        }
+
                         timeLeft--;
                         if (timeLeft <= 0) {
                             timeLeft = 20;
@@ -2863,6 +2927,16 @@ async function startServer() {
                             }
                             pollWhatsAppStatus();
                         }, 1200);
+                    }
+
+                    // 5. Hard Reset
+                    async function requestHardReset() {
+                        if (!confirm("هل تريد إعادة تشغيل سيرفر البوت بالكامل لتوليد رمز جديد نظيف؟")) return;
+                        if (liveStatus) liveStatus.innerText = '⏳ جاري إعادة تشغيل البوت...';
+                        try {
+                            await fetch('/api/whatsapp/reset?clean=true', { method: 'POST' });
+                        } catch(e) {}
+                        setTimeout(() => window.location.reload(), 2500);
                     }
                 </script>
             </body>
@@ -3747,20 +3821,24 @@ async function startServer() {
 
     // Background Realtime Poller for Supabase Website Orders
     let isProcessingSupabaseOrders = false;
+    const notifiedTelegramOrders = new Set<string>();
+
     const pollSupabaseOrders = async () => {
         if (isProcessingSupabaseOrders) return;
         isProcessingSupabaseOrders = true;
         try {
             const pendingOrders = await getPendingOrders();
+            if (!pendingOrders || pendingOrders.length === 0) return;
+
             for (const order of pendingOrders) {
-                console.log(`[Supabase Order Poller] Processing pending order ${order.id} for ${order.client_name}`);
                 let cleanPhone = (order.phone || '').replace(/\D/g, '');
                 if (cleanPhone.startsWith('0')) cleanPhone = '2' + cleanPhone;
                 if (!cleanPhone.startsWith('2') && cleanPhone.length === 10) cleanPhone = '20' + cleanPhone;
                 const targetId = `${cleanPhone}@c.us`;
 
-                // 1. Send Telegram Notification
-                if (telegramBot && !order.telegram_notified) {
+                // 1. Send Telegram Notification (only once per order)
+                if (telegramBot && !order.telegram_notified && !notifiedTelegramOrders.has(order.id)) {
+                    notifiedTelegramOrders.add(order.id);
                     const targetGroup = telegramGroupChatId || lastTelegramGroupChatId || '-5433306866';
                     const tgText = `🚀 *طلب جديد وصل عبر موقع Texora الرسمي!*\n\n` +
                         `👤 *العميل:* ${order.client_name}\n` +
@@ -3780,28 +3858,24 @@ async function startServer() {
                     }
                 }
 
-                // 2. WhatsApp Outreach
-                let waSent = false;
+                // 2. WhatsApp Outreach (only when WhatsApp is connected)
                 if (whatsappClient && isWhatsappConnected && cleanPhone.length >= 10) {
                     try {
                         const promptForWelcome = `العميل قدم طلباً باسم (${order.client_name}) لخدمة (${order.service_title}) وتفاصيل (${order.details}) عبر موقع الشركة الرسمي.\n\nصيغ رسالة ترحيبية ودية ومريحة جداً (سطرين إلى 3 أسطر) باسم شركة Texora للبرمجيات، ترحب به وتؤكد له استلام طلبه وتسأله بكل بساطة عن فكرته لتحديد المواصفات بوضوح.`;
                         const initialReply = await callGroqLLM(targetId, promptForWelcome, false, cleanPhone);
                         if (initialReply) {
                             await whatsappClient.sendMessage(targetId, initialReply + "\u200B");
-                            waSent = true;
                             console.log(`[Supabase Order Poller] Sent initial WhatsApp welcome to +${cleanPhone}`);
+                            await markOrderNotified(order.id, {
+                                whatsapp_notified: true,
+                                telegram_notified: true,
+                                status: 'in_progress'
+                            });
                         }
                     } catch (waErr: any) {
                         console.error('[Supabase Order Poller WA Error]:', waErr?.message || waErr);
                     }
                 }
-
-                // 3. Mark as notified in Supabase
-                await markOrderNotified(order.id, {
-                    whatsapp_notified: waSent,
-                    telegram_notified: true,
-                    status: waSent ? 'in_progress' : 'received'
-                });
             }
         } catch (err: any) {
             console.error('[Supabase Order Poller Error]:', err?.message || err);
@@ -3810,8 +3884,8 @@ async function startServer() {
         }
     };
 
-    // Poll Supabase every 4 seconds for immediate reaction
-    setInterval(pollSupabaseOrders, 4000);
+    // Poll Supabase every 8 seconds
+    setInterval(pollSupabaseOrders, 8000);
 
     const cleanupAndExit = async () => {
         console.log("Shutting down gracefully...");
