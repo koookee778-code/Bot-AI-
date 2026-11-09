@@ -1716,8 +1716,9 @@ async function startServer() {
                     dataPath: authPath
                 }),
                 webVersionCache: {
-                    type: 'remotePath',
-                    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1053716622-alpha.html',
+                    type: 'remote',
+                    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html',
+                    strict: false
                 },
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
