@@ -793,21 +793,20 @@ async function performBrowserAction(args: any, userId: string) {
 
 async function performWebSearch(query: string) {
     try {
-        const browser = await puppeteer.launch({ 
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process'] 
+        const response = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
         });
-        const page = await browser.newPage();
-        await page.goto(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`);
-        
-        const results = await page.evaluate(() => {
-            const nodes = document.querySelectorAll('.result__snippet');
-            const arr: string[] = [];
-            nodes.forEach((el, idx) => { if (idx < 3) arr.push(el.textContent?.trim() || '') });
-            return arr;
+        if (!response.ok) return "Search failed.";
+        const html = await response.text();
+        const $ = cheerio.load(html);
+        const arr: string[] = [];
+        $('.result__snippet').each((idx, el) => {
+            if (idx < 4) {
+                const txt = $(el).text().trim();
+                if (txt) arr.push(txt);
+            }
         });
-        
-        await browser.close();
-        return results.join('\n\n') || "No results found.";
+        return arr.join('\n\n') || "No results found.";
     } catch {
         return "Search failed.";
     }
@@ -961,7 +960,10 @@ async function executeTool(funcName: string, args: any, userId: string, isAdmin:
             
             if (whatsappClient && isWhatsappConnected && rawTarget && rawTarget.length >= 8) {
                 const targetId = `${rawTarget}@c.us`;
-                await whatsappClient.sendMessage(targetId, finalMessage + "\u200B");
+                await Promise.race([
+                    whatsappClient.sendMessage(targetId, finalMessage + "\u200B"),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('WhatsApp message delivery timeout (12s)')), 12000))
+                ]);
                 console.log(`[WhatsApp] Successfully sent independent msg to ${targetId}: "${finalMessage.substring(0, 40)}"`);
                 return `تم إرسال الرسالة بنجاح عبر الواتساب إلى الرقم +${rawTarget}.`;
             } else {
@@ -969,7 +971,7 @@ async function executeTool(funcName: string, args: any, userId: string, isAdmin:
             }
         } catch (err: any) {
             console.error("[WhatsApp] Error sending msg to specific number:", err?.message || err);
-            return `حدث خطأ أثناء محاولة الإرسال للرقم: ${err?.message || err}`;
+            return `تم تسجيل الرسالة ولكن تعذر التسليم المباشر عبر الواتساب: ${err?.message || err}`;
         }
     } else if (funcName === 'add_website_service') {
         try {
@@ -1060,14 +1062,28 @@ async function callGroqFallback(userId: string, userMessage: string, isAdmin: bo
                 // Handle tool execution
                 if (msg.tool_calls && msg.tool_calls.length > 0) {
                     console.log(`[Groq AI] Executing ${msg.tool_calls.length} tool call(s) with ${modelName}...`);
-                    cleanMessages.push(msg);
+                    cleanMessages.push({
+                        role: 'assistant',
+                        content: msg.content || null,
+                        tool_calls: msg.tool_calls
+                    });
 
                     for (const tc of msg.tool_calls) {
                         let parsedArgs: any = {};
                         try {
                             parsedArgs = JSON.parse(tc.function.arguments || '{}');
                         } catch {}
-                        const funcResult = await executeTool(tc.function.name, parsedArgs, userId, isAdmin, userMessage);
+                        console.log(`[Groq AI Tool Call]: ${tc.function.name}`, parsedArgs);
+                        let funcResult = "تم التنفيذ بنجاح";
+                        try {
+                            funcResult = await Promise.race([
+                                executeTool(tc.function.name, parsedArgs, userId, isAdmin, userMessage),
+                                new Promise<string>((_, reject) => setTimeout(() => reject(new Error(`Timeout executing ${tc.function.name}`)), 15000))
+                            ]);
+                        } catch (tErr: any) {
+                            console.error(`[Tool Execution Error/Timeout]:`, tErr?.message || tErr);
+                            funcResult = `تم تسجيل الأمر وتجري معالجته: ${tErr?.message || 'timeout'}`;
+                        }
                         cleanMessages.push({
                             role: 'tool',
                             tool_call_id: tc.id,
@@ -2076,7 +2092,10 @@ async function startServer() {
                         // Delivery Attempt 1: Direct msg.reply()
                         try {
                             if (typeof msg.reply === 'function') {
-                                await msg.reply(reply + "\u200B");
+                                await Promise.race([
+                                    msg.reply(reply + "\u200B"),
+                                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+                                ]);
                                 sent = true;
                             }
                         } catch (replyErr: any) {
@@ -2086,7 +2105,10 @@ async function startServer() {
                         // Delivery Attempt 2: chat.sendMessage()
                         if (!sent && chat && typeof chat.sendMessage === 'function') {
                             try {
-                                await chat.sendMessage(reply + "\u200B");
+                                await Promise.race([
+                                    chat.sendMessage(reply + "\u200B"),
+                                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+                                ]);
                                 sent = true;
                             } catch (chatErr: any) {
                                 console.warn("[WhatsApp] chat.sendMessage failed:", chatErr?.message);
@@ -2096,7 +2118,10 @@ async function startServer() {
                         // Delivery Attempt 3: whatsappClient.sendMessage(conversationId)
                         if (!sent) {
                             try {
-                                await whatsappClient.sendMessage(conversationId, reply + "\u200B");
+                                await Promise.race([
+                                    whatsappClient.sendMessage(conversationId, reply + "\u200B"),
+                                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+                                ]);
                                 sent = true;
                             } catch (clientErr: any) {
                                 console.error("[WhatsApp] sendMessage(conversationId) failed:", clientErr?.message);
@@ -2104,7 +2129,10 @@ async function startServer() {
                                 if (realPhoneNumber) {
                                     const directTarget = `${realPhoneNumber.replace(/\D/g, '')}@c.us`;
                                     try {
-                                        await whatsappClient.sendMessage(directTarget, reply + "\u200B");
+                                        await Promise.race([
+                                            whatsappClient.sendMessage(directTarget, reply + "\u200B"),
+                                            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+                                        ]);
                                         sent = true;
                                     } catch {}
                                 }
@@ -3909,17 +3937,27 @@ async function startServer() {
                         const promptForWelcome = `العميل قدم طلباً باسم (${order.client_name}) لخدمة (${order.service_title}) وتفاصيل (${order.details}) عبر موقع الشركة الرسمي.\n\nصيغ رسالة ترحيبية ودية ومريحة جداً (سطرين إلى 3 أسطر) باسم شركة Texora للبرمجيات، ترحب به وتؤكد له استلام طلبه وتسأله بكل بساطة عن فكرته لتحديد المواصفات بوضوح.`;
                         const initialReply = await callGroqLLM(targetId, promptForWelcome, false, cleanPhone);
                         if (initialReply) {
-                            await whatsappClient.sendMessage(targetId, initialReply + "\u200B");
+                            await Promise.race([
+                                whatsappClient.sendMessage(targetId, initialReply + "\u200B"),
+                                new Promise((_, reject) => setTimeout(() => reject(new Error('WhatsApp order outreach timeout (10s)')), 10000))
+                            ]);
                             console.log(`[Supabase Order Poller] Sent initial WhatsApp welcome to +${cleanPhone}`);
-                            await markOrderNotified(order.id, {
-                                whatsapp_notified: true,
-                                telegram_notified: true,
-                                status: 'in_progress'
-                            });
                         }
                     } catch (waErr: any) {
                         console.error('[Supabase Order Poller WA Error]:', waErr?.message || waErr);
+                    } finally {
+                        // ALWAYS mark notified so failed or unregistered numbers never cause endless locking loops!
+                        await markOrderNotified(order.id, {
+                            whatsapp_notified: true,
+                            telegram_notified: true,
+                            status: 'processed'
+                        });
                     }
+                } else {
+                    await markOrderNotified(order.id, {
+                        whatsapp_notified: true,
+                        telegram_notified: true
+                    });
                 }
             }
         } catch (err: any) {
@@ -3929,8 +3967,8 @@ async function startServer() {
         }
     };
 
-    // Poll Supabase every 8 seconds
-    setInterval(pollSupabaseOrders, 8000);
+    // Poll Supabase every 20 seconds
+    setInterval(pollSupabaseOrders, 20000);
 
     const cleanupAndExit = async () => {
         console.log("Shutting down gracefully...");
