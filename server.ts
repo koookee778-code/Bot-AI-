@@ -2491,6 +2491,74 @@ async function startServer() {
         });
     });
 
+    app.get(['/qr', '/link', '/connect', '/whatsapp'], (req, res) => {
+        if (!whatsappClient && !isStartingWhatsApp) {
+            startWhatsappClient().catch(() => {});
+        }
+        if (isWhatsappConnected) {
+            return res.send(`
+                <!DOCTYPE html>
+                <html dir="rtl" lang="ar">
+                <head>
+                    <meta charset="UTF-8">
+                    <title>واتساب متصل - Texora Bot</title>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <script src="https://cdn.tailwindcss.com"></script>
+                </head>
+                <body class="bg-slate-950 text-white min-h-screen flex items-center justify-center p-4 font-sans">
+                    <div class="bg-slate-900 border border-emerald-500/30 rounded-3xl p-8 max-w-md w-full text-center shadow-2xl">
+                        <div class="w-20 h-20 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-4 text-4xl">
+                            ✓
+                        </div>
+                        <h1 class="text-2xl font-bold text-emerald-400 mb-2">واتساب متصل ويعمل سحابياً! 🚀</h1>
+                        <p class="text-slate-300 text-sm mb-6">تم ربط جلسة واتساب بنجاح وتعمل الآن 24/7 لاستقبال ومناقشة طلبات العملاء تلقائياً.</p>
+                        <a href="/" class="inline-block bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 px-6 rounded-xl transition">
+                            الانتقال إلى لوحة التحكم
+                        </a>
+                    </div>
+                </body>
+                </html>
+            `);
+        }
+
+        const qrImg = qrCodeDataUrl || '';
+        return res.send(`
+            <!DOCTYPE html>
+            <html dir="rtl" lang="ar">
+            <head>
+                <meta charset="UTF-8">
+                <title>ربط واتساب السحابي - Texora Bot</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <meta http-equiv="refresh" content="8">
+                <script src="https://cdn.tailwindcss.com"></script>
+            </head>
+            <body class="bg-slate-950 text-white min-h-screen flex items-center justify-center p-4 font-sans">
+                <div class="bg-slate-900 border border-indigo-500/30 rounded-3xl p-8 max-w-md w-full text-center shadow-2xl">
+                    <div class="inline-flex items-center gap-2 px-3 py-1 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-full text-xs font-semibold mb-4">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                        سيرفر Texora السحابي المباشر
+                    </div>
+                    <h1 class="text-2xl font-bold text-white mb-2">ربط واتساب بالذكاء الاصطناعي 📱</h1>
+                    <p class="text-slate-400 text-sm mb-6">امسح رمز الـ QR أدناه عبر هاتفك لربط البوت السحابي فوراً وبدء الردود التلقائية.</p>
+                    
+                    <div class="bg-white p-4 rounded-2xl inline-block shadow-xl mb-6 mx-auto">
+                        \${qrImg ? \`<img src="\${qrImg}" alt="WhatsApp QR Code" class="w-64 h-64 object-contain">\` : \`<div class="w-64 h-64 flex flex-col items-center justify-center text-slate-500"><div class="animate-spin text-3xl mb-2">⏳</div><p class="text-xs">جاري تجهيز وتحديث رمز الـ QR...</p></div>\`}
+                    </div>
+
+                    <div class="text-right bg-slate-800/60 rounded-2xl p-4 text-xs space-y-2 text-slate-300 border border-slate-700/50 mb-4">
+                        <div class="font-bold text-indigo-300 mb-1">خطوات الربط من الهاتف:</div>
+                        <div>1. افتح تطبيق <b>واتساب</b> على هاتفك.</div>
+                        <div>2. اضغط على خيارات (الثلاث نقاط) &gt; <b>الأجهزة المرتبطة</b>.</div>
+                        <div>3. اضغط <b>ربط جهاز</b> وامسح الرمز أعلاه بكاميرا الهاتف.</div>
+                    </div>
+
+                    <p class="text-[11px] text-slate-500">يتم تحديث هذه الصفحة والرمز تلقائياً كل 8 ثوانٍ.</p>
+                </div>
+            </body>
+            </html>
+        `);
+    });
+
     app.post('/api/clear-memory', (req, res) => {
         try {
             // Clear memory dictionaries
