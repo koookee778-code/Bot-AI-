@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import http from 'http';
@@ -6,13 +9,24 @@ import cors from 'cors';
 import path from 'path';
 import QRCode from 'qrcode';
 import whatsapp from 'whatsapp-web.js';
-const { Client, LocalAuth } = whatsapp;
+const { Client, LocalAuth, MessageMedia } = whatsapp;
 import TelegramBot from 'node-telegram-bot-api';
 import Groq from 'groq-sdk';
 import { GoogleGenAI, Type, FunctionDeclaration } from '@google/genai';
 import fs from 'fs';
 import { execSync } from 'child_process';
 import * as cheerio from 'cheerio';
+import { transcribeAudio, generateVoiceAudio, cleanTextForSpeech } from './audio_service.ts';
+import { TEXORA_KNOWLEDGE_BASE } from './texora_knowledge.ts';
+import {
+    getActiveServices,
+    addWebsiteService,
+    removeWebsiteService,
+    saveOrderToSupabase,
+    getLiveStats,
+    WebsiteService,
+    WebsiteOrder
+} from './supabase_client.ts';
 
 // Absolute 24/7 crash shield for server stability (Never crashes on unhandled errors)
 process.on('uncaughtException', (err: any) => {
@@ -73,10 +87,12 @@ export const DEFAULT_TEXORA_INSTRUCTIONS = `أنت المساعد الذكي ا�
         "تم تنفيذ طلبك بنجاح، سيتواصل معك فريق خدمة العملاء بعد الانتهاء من طلبك."
      مع توجيه الشكر والتقدير له على ثقته بشركة Texora.
 
-🎙️ التعامل مع الرسائل الصوتية:
-- إذا أرسل العميل تسجيلاً صوتياً، يتم الاعتذار بلطف ومطالبته بالكتابة:
-  "بعتذر لك جداً، لكن لا أستطيع فهم الرسائل الصوتية حالياً 🎙️🙏
-  خلينا محادثة كتابية أحسن علشان أقدر أساعدك وأفهم كل اللي محتاجه بالتفصيل."`;
+🎙️ الهوية الصوتية والتفاعل الصوتي (صوت لولوة - Lulwa):
+- أنت تمتلك قدرات استماع وتحدث صوتية متفوقة ومدعومة بأحدث نماذج Whisper ونموذج الصوت العربي السعودي المعتمد "lulwa".
+- عندما يتحدث العميل بالصوت، تفهمه بدقة عالية وترد عليه بأسلوب مهذب ومحبب كأنك استشارية بشرية في مكتب تكسورا.
+- تحدث باعتزاز باسم شركة Texora وقدم معلومات دقيقة من باقات وخدمات الشركة الرسمية.
+
+${TEXORA_KNOWLEDGE_BASE}`;
 
 let adminNumber = '';
 let globalInstructions = DEFAULT_TEXORA_INSTRUCTIONS;
@@ -331,6 +347,61 @@ const tools = [
         required: ["action"]
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_website_service",
+      description: "Admin tool: Add a new service to the company website in Supabase. It will immediately show in the Start Project wizard for website visitors.",
+      parameters: {
+        type: "object",
+        properties: {
+          title_ar: { type: "string", description: "Arabic service title (e.g. تصميم صور وبوسترات احترافية)" },
+          title_en: { type: "string", description: "English service title (e.g. Professional Image Design)" },
+          description_ar: { type: "string", description: "Arabic service description" },
+          description_en: { type: "string", description: "English service description" },
+          category: { type: "string", description: "Category slug (e.g. graphic-design, ai-solutions, custom-dev)" },
+          icon: { type: "string", description: "Icon name: Palette, Sparkles, Store, Globe, GraduationCap, Megaphone, Cpu, Layers" }
+        },
+        required: ["title_ar", "description_ar"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_website_service",
+      description: "Admin tool: Delete or deactivate a service from the company website in Supabase by service ID or title.",
+      parameters: {
+        type: "object",
+        properties: {
+          service_name_or_id: { type: "string", description: "The service ID or Arabic/English title to remove" }
+        },
+        required: ["service_name_or_id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_website_services",
+      description: "Admin tool: List all active services published on the company website stored in Supabase.",
+      parameters: {
+        type: "object",
+        properties: {}
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_analytics_and_orders_summary",
+      description: "Admin tool: Get live website analytics and order metrics from Supabase (visitor count, orders count, recent orders list).",
+      parameters: {
+        type: "object",
+        properties: {}
+      }
+    }
   }
 ];
 
@@ -429,6 +500,49 @@ const geminiTools: FunctionDeclaration[] = [
         amount: { type: Type.NUMBER, description: "Pixels to scroll or seconds to wait" }
       },
       required: ["action"]
+    }
+  },
+  {
+    name: "add_website_service",
+    description: "Admin tool: Add a new service to the company website in Supabase. It will immediately show in the Start Project wizard for website visitors.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        title_ar: { type: Type.STRING, description: "Arabic service title (e.g. تصميم صور وبوسترات احترافية)" },
+        title_en: { type: Type.STRING, description: "English service title (e.g. Professional Image Design)" },
+        description_ar: { type: Type.STRING, description: "Arabic service description" },
+        description_en: { type: Type.STRING, description: "English service description" },
+        category: { type: Type.STRING, description: "Category slug (e.g. graphic-design, ai-solutions, custom-dev)" },
+        icon: { type: Type.STRING, description: "Icon name: Palette, Sparkles, Store, Globe, GraduationCap, Megaphone, Cpu, Layers" }
+      },
+      required: ["title_ar", "description_ar"]
+    }
+  },
+  {
+    name: "delete_website_service",
+    description: "Admin tool: Delete or deactivate a service from the company website in Supabase by service ID or title.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        service_name_or_id: { type: Type.STRING, description: "The service ID or Arabic/English title to remove" }
+      },
+      required: ["service_name_or_id"]
+    }
+  },
+  {
+    name: "list_website_services",
+    description: "Admin tool: List all active services published on the company website stored in Supabase.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {}
+    }
+  },
+  {
+    name: "get_analytics_and_orders_summary",
+    description: "Admin tool: Get live website analytics and order metrics from Supabase (visitor count, orders count, recent orders list).",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {}
     }
   }
 ];
@@ -840,6 +954,57 @@ async function executeTool(funcName: string, args: any, userId: string, isAdmin:
             console.error("[WhatsApp] Error sending msg to specific number:", err?.message || err);
             return "تم توثيق بيانات وتفاصيل الطلب في النظام.";
         }
+    } else if (funcName === 'add_website_service') {
+        try {
+            const added = await addWebsiteService({
+                title_ar: args.title_ar,
+                title_en: args.title_en,
+                description_ar: args.description_ar,
+                description_en: args.description_en,
+                category: args.category,
+                icon: args.icon
+            });
+            return `تمت إضافة الخدمة بنجاح إلى موقع شركة TEXORA وقاعدة بيانات Supabase:\n📌 الاسم: ${added.title_ar}\n🆔 المعرف: ${added.id}\n📝 الوصف: ${added.description_ar}\n✨ الخدمة معروضة ومتاحة الآن فوراً لكل زوار الموقع عند الضغط على "ابدأ مشروعك"!`;
+        } catch (err: any) {
+            return `حدث خطأ أثناء إضافة الخدمة لقاعدة بيانات Supabase: ${err?.message || err}`;
+        }
+    } else if (funcName === 'delete_website_service') {
+        try {
+            const success = await removeWebsiteService(args.service_name_or_id);
+            if (success) {
+                return `تم حذف وإلغاء الخدمة "${args.service_name_or_id}" بنجاح من موقع شركة TEXORA ومن قاعدة بيانات Supabase. لن تظهر مجدداً في خيارات الموقع.`;
+            }
+            return `لم يتم العثور على الخدمة "${args.service_name_or_id}" لحذفها.`;
+        } catch (err: any) {
+            return `حدث خطأ أثناء حذف الخدمة من Supabase: ${err?.message || err}`;
+        }
+    } else if (funcName === 'list_website_services') {
+        try {
+            const list = await getActiveServices();
+            if (list.length === 0) return "لا توجد خدمات نشطة حالياً في قاعدة بيانات Supabase للموقع.";
+            const formatted = list.map((s, idx) => `${idx + 1}. [${s.id}] ${s.title_ar} - ${s.description_ar}`).join('\n');
+            return `قائمة الخدمات المعروضة حالياً على موقع الشركة (${list.length} خدمة):\n${formatted}`;
+        } catch (err: any) {
+            return `حدث خطأ أثناء استرجاع الخدمات من Supabase: ${err?.message || err}`;
+        }
+    } else if (funcName === 'get_analytics_and_orders_summary') {
+        try {
+            const stats = await getLiveStats();
+            let summary = `📊 *تقرير إحصائيات موقع شركة TEXORA المباشر (Supabase Database):*\n\n`;
+            summary += `👁️ *إجمالي عدد زيارات الموقع:* ${stats.totalVisits} زيارة\n`;
+            summary += `📦 *إجمالي الطلبات المستلمة:* ${stats.totalOrders} طلب\n`;
+            summary += `🆕 *الطلبات الجديدة قيد المتابعة:* ${stats.newOrders} طلب\n`;
+            summary += `🛠️ *عدد الخدمات النشطة على الموقع:* ${stats.activeServicesCount} خدمة\n\n`;
+            if (stats.recentOrders && stats.recentOrders.length > 0) {
+                summary += `📋 *آخر الطلبات المستلمة:*\n`;
+                stats.recentOrders.forEach((o, i) => {
+                    summary += `${i + 1}) العميل: ${o.client_name} (${o.phone}) - الخدمة: ${o.service_title}\n   التفاصيل: ${o.details}\n   الحالة: ${o.status || 'جديد'}\n`;
+                });
+            }
+            return summary;
+        } catch (err: any) {
+            return `حدث خطأ أثناء جلب إحصائيات الموقع من Supabase: ${err?.message || err}`;
+        }
     }
     return "تم استلام الطلب وتنفيذه بنجاح.";
 }
@@ -882,7 +1047,11 @@ async function callAI(userId: string, userMessage: string, isAdmin: boolean, rea
     let systemPrompt = '';
     if (isAdmin) {
         systemPrompt = "أنت موظف والمساعد الذكي لنظام ومجموعة إدارة شركة Texora للبرمجيات. الأعضاء والمستخدمون في هذا الجروب هم إدارة الشركة وأصحاب القرار العالي. واجبك الأول والمطلق هو احترامهم، طاعتهم، وتنفذ جميع أوامرهم وتوجيهاتهم فوراً وبدقة متناهية، مع التحدث بأسلوب راقٍ ومؤدب جداً كموظف خدمة عملاء وإدارة مخلص وخبير لشركة Texora.";
-        systemPrompt += "\n\nالأدوات والوظائف المتاحة لك لتنفيذ أوامر إدارة الشركة:\n";
+        systemPrompt += "\n\nالأدوات والوظائف المتاحة لك لتنفيذ أوامر إدارة الشركة والتحكم بموقع الشركة وقاعدة بيانات Supabase:\n";
+        systemPrompt += "- إضافة خدمة جديدة فوراً في موقع الشركة تظهر تلقائياً في خيارات 'ابدأ مشروعك' للعملاء (add_website_service)\n";
+        systemPrompt += "- حذف أو إلغاء تفعيل خدمة من موقع الشركة وقاعدة البيانات (delete_website_service)\n";
+        systemPrompt += "- عرض قائمة الخدمات المعروضة حالياً على الموقع (list_website_services)\n";
+        systemPrompt += "- معرفة إحصائيات وعدد زيارات الموقع وعدد الطلبات والطلبات المعلقة من Supabase (get_analytics_and_orders_summary)\n";
         systemPrompt += "- قراءة الروابط والمواقع (read_url)\n";
         systemPrompt += "- لقطات الشاشة الحية (capture_screenshot)\n";
         systemPrompt += "- إرسال رسائل أو تنبيهات لأي رقم (send_message_to_number)\n";
@@ -923,64 +1092,58 @@ async function callAI(userId: string, userMessage: string, isAdmin: boolean, rea
 
         for (const modelName of geminiModels) {
             try {
-                const response = await gemini.models.generateContent({
-                    model: modelName,
-                    contents: contents,
-                    config: {
-                        systemInstruction: systemPrompt,
-                        tools: [{ functionDeclarations: availableDecls }],
-                        temperature: 0.6
-                    }
-                });
+                let currentTurn = 0;
+                const MAX_TURNS = 5;
+                let conversationContents = [...contents];
 
-                const functionCalls = response.functionCalls;
-                if (functionCalls && functionCalls.length > 0) {
-                    console.log(`[Gemini AI] Executing ${functionCalls.length} tool call(s) with ${modelName}...`);
-                    const functionResponses: any[] = [];
-
-                    for (const fc of functionCalls) {
-                        const funcName = fc.name;
-                        const args = fc.args || {};
-                        const funcResult = await executeTool(funcName, args, userId, isAdmin, userMessage);
-                        functionResponses.push({
-                            functionResponse: {
-                                name: funcName,
-                                response: { result: funcResult }
-                            }
-                        });
-                    }
-
-                    const followUpResponse = await gemini.models.generateContent({
+                while (currentTurn < MAX_TURNS) {
+                    currentTurn++;
+                    const response = await gemini.models.generateContent({
                         model: modelName,
-                        contents: [
-                            ...contents,
-                            response.candidates?.[0]?.content as any,
-                            {
-                                role: 'user',
-                                parts: functionResponses
-                            }
-                        ],
+                        contents: conversationContents,
                         config: {
                             systemInstruction: systemPrompt,
+                            tools: [{ functionDeclarations: availableDecls }],
                             temperature: 0.6
                         }
                     });
 
-                    let finalReply = followUpResponse.text || '';
-                    if (!finalReply.trim()) {
-                        finalReply = "تم تنفيذ طلبك بنجاح، سيتواصل معك فريق خدمة العملاء بعد الانتهاء من طلبك. نشكرك على ثقتك بشركة Texora! ✨";
+                    const functionCalls = response.functionCalls;
+                    if (functionCalls && functionCalls.length > 0) {
+                        console.log(`[Gemini AI] Turn ${currentTurn}: Executing ${functionCalls.length} tool call(s) with ${modelName}...`);
+                        const functionResponses: any[] = [];
+
+                        for (const fc of functionCalls) {
+                            const funcName = fc.name;
+                            const args = fc.args || {};
+                            const funcResult = await executeTool(funcName, args, userId, isAdmin, userMessage);
+                            functionResponses.push({
+                                functionResponse: {
+                                    name: funcName,
+                                    response: { result: funcResult }
+                                }
+                            });
+                        }
+
+                        if (response.candidates?.[0]?.content) {
+                            conversationContents.push(response.candidates[0].content as any);
+                        }
+                        conversationContents.push({
+                            role: 'user',
+                            parts: functionResponses
+                        } as any);
+
+                        continue;
                     }
-                    chatHistories[userId].push({ role: 'assistant', content: finalReply });
-                    return finalReply;
-                }
 
-                let textReply = response.text || '';
-                if (!textReply.trim()) {
-                    textReply = "أهلاً بك في شركة Texora للبرمجيات! كيف يمكنني مساعدتك في تصميم وتطوير مشروعك اليوم؟";
+                    let textReply = response.text || '';
+                    if (!textReply.trim()) {
+                        textReply = "أهلاً بك في شركة Texora للبرمجيات! كيف يمكنني مساعدتك في تصميم وتطوير مشروعك اليوم؟";
+                    }
+                    chatHistories[userId].push({ role: 'assistant', content: textReply });
+                    safeSaveJSON('db_history.json', chatHistories);
+                    return textReply;
                 }
-                chatHistories[userId].push({ role: 'assistant', content: textReply });
-                return textReply;
-
             } catch (geminiError: any) {
                 // Check if quota / auth / rate limit error -> rotate key silently
                 const errMsg = geminiError?.message || JSON.stringify(geminiError);
@@ -1093,6 +1256,9 @@ function cleanAllChromiumLocks() {
 
 function killOrphanedChromeProcesses() {
     try {
+        if (process.platform === 'win32') {
+            return;
+        }
         const psOutput = execSync('ps aux || true').toString();
         const lines = psOutput.split('\n');
         for (const line of lines) {
@@ -1112,7 +1278,7 @@ function killOrphanedChromeProcesses() {
 
 async function startServer() {
     const app = express();
-    const PORT = 3000;
+    const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
     // Fully permissive CORS for all external origins, websites and preview domains
     app.use(cors({
@@ -1134,7 +1300,11 @@ async function startServer() {
         if (req.path.startsWith('/api') || req.path.includes('order') || req.path.includes('lead') || req.path.includes('webhook')) {
             console.log(`[HTTP INCOMING] ${req.method} ${req.originalUrl}`);
             if (req.body && Object.keys(req.body).length > 0) {
-                console.log(`[HTTP BODY]`, typeof req.body === 'string' ? req.body.slice(0, 300) : req.body);
+                if (typeof req.body === 'object' && req.body.audioBase64) {
+                    console.log(`[HTTP BODY]`, { ...req.body, audioBase64: `[audio data ${req.body.audioBase64.length} chars]` });
+                } else {
+                    console.log(`[HTTP BODY]`, typeof req.body === 'string' ? req.body.slice(0, 300) : req.body);
+                }
             }
             if (req.query && Object.keys(req.query).length > 0) {
                 console.log(`[HTTP QUERY]`, req.query);
@@ -1368,6 +1538,18 @@ async function startServer() {
                                 console.error("[Telegram Direct Send Error]:", err2?.message || err2);
                             });
                         });
+
+                        // Autonomous Voice Note Reply on Telegram (Lulwa Voice via Groq)
+                        const shouldSendTgVoice = msgObj?.voice || msgObj?.audio || process.env.ENABLE_VOICE_REPLIES === 'true';
+                        if (shouldSendTgVoice) {
+                            try {
+                                console.log(`[Telegram Voice TTS] Generating Lulwa voice reply for ${chatId}...`);
+                                const { oggBuffer } = await generateVoiceAudio(reply, 'lulwa');
+                                telegramBot?.sendVoice(chatId, oggBuffer).catch(e => console.warn("[Telegram SendVoice Error]:", e?.message));
+                            } catch (tgVoiceErr: any) {
+                                console.warn("[Telegram Voice TTS Warning]:", tgVoiceErr?.message || tgVoiceErr);
+                            }
+                        }
                     }
                 }
             };
@@ -1381,7 +1563,29 @@ async function startServer() {
                         return;
                     }
                     const chatId = msg.chat.id.toString();
-                    const text = msg.text || msg.caption || '';
+                    let text = msg.text || msg.caption || '';
+
+                    // Transcribe incoming Telegram Voice / Audio Note
+                    if ((msg.voice || msg.audio) && !text.trim()) {
+                        try {
+                            const fileId = msg.voice ? msg.voice.file_id : msg.audio?.file_id;
+                            if (fileId) {
+                                console.log(`[Telegram Voice] Downloading voice note from @${senderUsername || 'anon'}...`);
+                                const fileLink = await bot.getFileLink(fileId);
+                                const fileResp = await fetch(fileLink);
+                                const audioBuffer = Buffer.from(await fileResp.arrayBuffer());
+                                const transcribed = await transcribeAudio(audioBuffer, 'audio/ogg');
+                                if (transcribed && transcribed.trim()) {
+                                    text = transcribed.trim();
+                                    console.log(`[Telegram STT Success] Transcribed: "${text}"`);
+                                }
+                            }
+                        } catch (tgVoiceErr: any) {
+                            console.error("[Telegram Voice STT Error]:", tgVoiceErr?.message || tgVoiceErr);
+                        }
+                    }
+
+                    if (!text || !text.trim()) return;
                     console.log(`[Telegram Bot Ingest] Received from @${senderUsername || 'anon'} in chat ${chatId}: "${text.slice(0, 80)}"`);
                     await processTelegramIncomingMessage(chatId, text, false, msg);
                 } catch(err: any) {
@@ -1467,6 +1671,7 @@ async function startServer() {
                     dataPath: authPath
                 }),
                 puppeteer: { 
+                    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
                     headless: true,
                     args: [
                         '--no-sandbox', 
@@ -1600,34 +1805,39 @@ async function startServer() {
                         return;
                     }
 
-                    // 3. Handle Voice Messages / Audio Notes (PTT)
+                    // 3. Handle Voice Messages / Audio Notes (PTT) with Whisper STT
                     const isVoiceOrAudio = msg.type === 'ptt' || msg.type === 'audio' || msg.type === 'voice' || (msg.hasMedia && !textBody.trim() && (msg.type as any) !== 'image' && (msg.type as any) !== 'document');
+                    let activeUserMessage = textBody;
+
                     if (isVoiceOrAudio) {
                         if (msg.fromMe) return; // Don't reply to outgoing voice notes
-                        console.log(`[WhatsApp] Received voice message from ${fromStr}`);
-                        const voiceApology = "بعتذر لك جداً، لكن لا أستطيع فهم الرسائل الصوتية حالياً 🎙️🙏\nخلينا محادثة كتابية أحسن علشان أقدر أساعدك وأفهم كل اللي محتاجه بالتفصيل ونبدأ فوراً ✨\u200B";
+                        console.log(`[WhatsApp Voice] Processing incoming audio message from ${fromStr}...`);
                         try {
-                            if (typeof msg.reply === 'function') {
-                                await msg.reply(voiceApology);
-                            } else {
-                                let chat = null;
-                                try { chat = await msg.getChat(); } catch {}
-                                const targetId = chat?.id?._serialized || fromStr;
-                                await whatsappClient?.sendMessage(targetId, voiceApology);
+                            const media = await msg.downloadMedia();
+                            if (media && media.data) {
+                                const audioBuffer = Buffer.from(media.data, 'base64');
+                                const transcribed = await transcribeAudio(audioBuffer, media.mimetype || 'audio/ogg');
+                                if (transcribed && transcribed.trim()) {
+                                    activeUserMessage = transcribed.trim();
+                                    console.log(`[WhatsApp STT Success] Transcribed voice from ${fromStr}: "${activeUserMessage}"`);
+                                } else {
+                                    await msg.reply("عذراً، لم أتمكن من سماع الصوت بوضوح، برجاء إعادة إرسال التسجيل أو كتابته لنبدأ فوراً 🎙️🙏\u200B");
+                                    return;
+                                }
                             }
-                        } catch (err: any) {
-                            console.error("[WhatsApp] Error sending voice note apology:", err?.message || err);
-                            await whatsappClient?.sendMessage(fromStr, voiceApology).catch(() => {});
+                        } catch (sttErr: any) {
+                            console.error("[WhatsApp STT Error]:", sttErr?.message || sttErr);
+                            await msg.reply("عذراً، حدث خطأ أثناء معالجة الصوت، برجاء كتابة استفسارك لمتابعة طلبك فوراً 💬\u200B");
+                            return;
                         }
-                        return;
                     }
 
                     // 4. Validate text body
-                    if (!textBody.trim()) {
+                    if (!activeUserMessage.trim()) {
                         return;
                     }
 
-                    console.log(`[WhatsApp] Incoming message from: ${fromStr}, to: ${toStr}, fromMe: ${msg.fromMe}, text: ${textBody.substring(0, 35)}`);
+                    console.log(`[WhatsApp] Incoming message from: ${fromStr}, to: ${toStr}, fromMe: ${msg.fromMe}, text: ${activeUserMessage.substring(0, 35)}`);
 
                     // 5. Safely obtain or derive Chat object & ID
                     let chat: any = null;
@@ -1710,7 +1920,7 @@ async function startServer() {
                         try { await chat.sendStateTyping(); } catch {}
                     }
 
-                    const reply = await callGroqLLM(sessionKey, textBody, isFromAdmin, realPhoneNumber || chatUser);
+                    const reply = await callGroqLLM(sessionKey, activeUserMessage, isFromAdmin, realPhoneNumber || chatUser);
 
                     if (reply && whatsappClient) {
                         console.log(`[WhatsApp] Sending reply to ${conversationId}`);
@@ -1751,6 +1961,20 @@ async function startServer() {
                                         sent = true;
                                     } catch {}
                                 }
+                            }
+                        }
+
+                        // 4. Autonomous Voice Note Reply (Lulwa voice via Groq)
+                        const shouldSendVoiceReply = isVoiceOrAudio || process.env.ENABLE_VOICE_REPLIES === 'true';
+                        if (shouldSendVoiceReply && !isFromAdmin) {
+                            try {
+                                console.log(`[WhatsApp Voice TTS] Synthesizing Lulwa voice reply for ${conversationId}...`);
+                                const { oggBuffer } = await generateVoiceAudio(reply, 'lulwa');
+                                const voiceMedia = new MessageMedia('audio/ogg; codecs=opus', oggBuffer.toString('base64'), 'voice.ogg');
+                                await whatsappClient.sendMessage(conversationId, voiceMedia, { sendAudioAsVoice: true });
+                                console.log(`[WhatsApp Voice TTS] Voice note sent successfully to ${conversationId}`);
+                            } catch (voiceReplyErr: any) {
+                                console.warn("[WhatsApp Voice Reply Error]:", voiceReplyErr?.message || voiceReplyErr);
                             }
                         }
                     }
@@ -2085,6 +2309,26 @@ async function startServer() {
             clientsDB[cleanNumber] = leadRecord;
             await safeSaveJSON('clients_db.json', clientsDB);
 
+            // Save order to Supabase PostgreSQL database
+            try {
+                await saveOrderToSupabase({
+                    id: leadRecord.id,
+                    client_name: rawName,
+                    phone: `+${cleanNumber}`,
+                    company_or_brand: rawProduct,
+                    service_id: payload.systemCategory || payload.service_id || 'website-wizard',
+                    service_title: rawProduct,
+                    details: rawDetails,
+                    status: 'new',
+                    source: rawSource,
+                    whatsapp_notified: false,
+                    telegram_notified: !!telegramBot
+                });
+                console.log(`[Supabase] Order ${leadRecord.id} saved to Supabase 'orders' table.`);
+            } catch (supaErr: any) {
+                console.warn('[Supabase Order Sync Warning]:', supaErr?.message || supaErr);
+            }
+
             // Add context to conversation history
             if (!chatHistories[targetId]) {
                 chatHistories[targetId] = [];
@@ -2126,6 +2370,16 @@ async function startServer() {
                         if (initialReply && whatsappClient) {
                             await whatsappClient.sendMessage(targetId, initialReply + "\u200B");
                             console.log(`[Order WhatsApp Outreach] Sent welcome message to +${cleanNumber}`);
+
+                            // Update whatsapp_notified flag in Supabase
+                            saveOrderToSupabase({
+                                id: leadRecord.id,
+                                client_name: rawName,
+                                phone: `+${cleanNumber}`,
+                                service_title: rawProduct,
+                                details: rawDetails,
+                                whatsapp_notified: true
+                            }).catch(() => {});
                         }
 
                         // WhatsApp Admin notification
@@ -2507,13 +2761,78 @@ async function startServer() {
             }
 
             const reply = await callGroqLLM(sessionKey, cleanMsg, false, cleanPhone);
+
+            let audioBase64: string | null = null;
+            if (req.body.requestVoice || process.env.ENABLE_VOICE_REPLIES === 'true') {
+                try {
+                    const { oggBuffer } = await generateVoiceAudio(reply, 'lulwa');
+                    audioBase64 = oggBuffer.toString('base64');
+                } catch (ttsErr: any) {
+                    console.warn("[Widget TTS Error]:", ttsErr?.message || ttsErr);
+                }
+            }
+
             res.json({
                 success: true,
                 reply: reply || "أهلاً بك في شركة Texora! كيف يمكنني مساعدتك في مشروعك اليوم؟",
+                audioBase64: audioBase64,
+                voiceName: 'lulwa',
                 sessionId: safeSessionId
             });
         } catch (err: any) {
             console.error("[Widget Chat API Error]:", err);
+            res.status(500).json({ success: false, error: err.message });
+        }
+    });
+
+    // 1b. Interactive Voice Note Ingestion from Web Widget (Whisper Large V3 Turbo)
+    app.post('/api/texora/widget/voice', async (req, res) => {
+        try {
+            const { sessionId, audioBase64, mimeType, name, phone } = req.body;
+            if (!audioBase64) {
+                return res.status(400).json({ success: false, error: 'الملف الصوتي مطلوب' });
+            }
+
+            const audioBuffer = Buffer.from(audioBase64, 'base64');
+            const transcribedText = await transcribeAudio(audioBuffer, mimeType || 'audio/webm');
+            
+            if (!transcribedText || !transcribedText.trim()) {
+                return res.status(400).json({ success: false, error: 'تعذر التعرف على الصوت بوضوح' });
+            }
+
+            const safeSessionId = (sessionId || 'anon_' + Date.now()).toString().trim();
+            const sessionKey = `web_${safeSessionId}`;
+            const cleanPhone = phone ? phone.toString().replace(/\D/g, '') : '';
+            const reply = await callGroqLLM(sessionKey, transcribedText, false, cleanPhone);
+
+            let replyAudioBase64: string | null = null;
+            try {
+                const { oggBuffer } = await generateVoiceAudio(reply, 'lulwa');
+                replyAudioBase64 = oggBuffer.toString('base64');
+            } catch (e) {}
+
+            res.json({
+                success: true,
+                userText: transcribedText,
+                reply: reply,
+                audioBase64: replyAudioBase64,
+                voiceName: 'lulwa',
+                sessionId: safeSessionId
+            });
+        } catch (err: any) {
+            console.error("[Widget Voice API Error]:", err);
+            res.status(500).json({ success: false, error: err.message });
+        }
+    });
+
+    // 1c. Quick Audio Preview / Testing Endpoint (Lulwa voice)
+    app.post('/api/voice-preview', async (req, res) => {
+        try {
+            const text = req.body.text || 'أهلاً وسهلاً بك في شركة تيكسورا للبرمجيات، معك لولوة المستشارة التقنية للشركة.';
+            const { oggBuffer } = await generateVoiceAudio(text, 'lulwa');
+            res.setHeader('Content-Type', 'audio/ogg');
+            res.send(oggBuffer);
+        } catch (err: any) {
             res.status(500).json({ success: false, error: err.message });
         }
     });
@@ -2797,6 +3116,26 @@ async function startServer() {
             font-weight: bold;
             cursor: pointer;
         }
+        .texora-voice-play-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 8px;
+            padding: 5px 12px;
+            border-radius: 14px;
+            background: linear-gradient(135deg, #6366f1, #4f46e5);
+            color: #ffffff;
+            border: none;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(79, 70, 229, 0.3);
+            transition: transform 0.15s ease, opacity 0.15s ease;
+        }
+        .texora-voice-play-btn:hover {
+            opacity: 0.92;
+            transform: scale(1.02);
+        }
     \`;
     document.head.appendChild(style);
 
@@ -2912,6 +3251,18 @@ async function startServer() {
             var data = await resp.json();
             if (data.success && data.reply) {
                 botLoadingDiv.innerText = data.reply;
+                if (data.audioBase64) {
+                    var audioWrapper = document.createElement('div');
+                    var playBtn = document.createElement('button');
+                    playBtn.className = 'texora-voice-play-btn';
+                    playBtn.innerHTML = '🔊 استمع لرد لولوة (صوتي)';
+                    playBtn.onclick = function() {
+                        var audio = new Audio('data:audio/ogg;base64,' + data.audioBase64);
+                        audio.play();
+                    };
+                    audioWrapper.appendChild(playBtn);
+                    botLoadingDiv.appendChild(audioWrapper);
+                }
             } else {
                 botLoadingDiv.innerText = 'أهلاً بك، تم استلام رسالتك وسنرد عليك فوراً.';
             }
@@ -2945,7 +3296,15 @@ async function startServer() {
     });
 
     if (process.env.NODE_ENV !== "production") {
-        const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
+        const vite = await createViteServer({
+            server: {
+                middlewareMode: true,
+                watch: {
+                    ignored: ['**/.wwebjs_auth/**', '**/.wwebjs_cache/**', '**/*.json', '**/uploads/**', '**/node_modules/**']
+                }
+            },
+            appType: "spa"
+        });
         app.use(vite.middlewares);
     } else {
         const distPath = path.join(process.cwd(), 'dist');

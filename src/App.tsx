@@ -123,6 +123,28 @@ export default function App() {
   
   // Statuses
   const [waConnected, setWaConnected] = useState(false);
+  const [playingVoice, setPlayingVoice] = useState(false);
+
+  const playLulwaVoice = async () => {
+    try {
+      setPlayingVoice(true);
+      const res = await fetch('/api/voice-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: 'أهلاً وسهلاً بك في شركة تيكسورا للحلول البرمجية، يسعدنا جداً تواصلك معنا، معك لولوة المستشارة التقنية للشركة.'
+        })
+      });
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => setPlayingVoice(false);
+      audio.onerror = () => setPlayingVoice(false);
+      await audio.play();
+    } catch (e) {
+      setPlayingVoice(false);
+    }
+  };
   const [waLoading, setWaLoading] = useState(false);
   const [waQr, setWaQr] = useState<string | null>(null);
   
@@ -2027,6 +2049,59 @@ notifyTexoraBot({
                     >
                       حفظ الإعدادات
                     </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Voice AI Intelligence Section (Lulwa Voice & Whisper V3 Turbo) */}
+              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 shadow-sm">
+                <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+                  <div className="flex items-center gap-2.5">
+                    <Sparkles className="w-5 h-5 text-fuchsia-400" />
+                    <div>
+                      <h3 className="text-base font-bold text-white">نظام التفاعل الصوتي الذكي (Voice Agent Engine)</h3>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        فهم الرسائل الصوتية وتفريغها تلقائياً عبر Whisper Large V3 Turbo والرد بصوت "لولوة" (Orpheus Arabic Saudi).
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-bold text-fuchsia-300 bg-fuchsia-950/80 border border-fuchsia-800 px-3 py-1 rounded-full flex items-center gap-1.5 shrink-0">
+                    <span className="w-2 h-2 rounded-full bg-fuchsia-400 animate-pulse"></span>
+                    نشط ومدعوم بالكامل 🎙️
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                  <div className="p-4 bg-slate-900/80 border border-slate-800 rounded-xl space-y-2">
+                    <div className="flex items-center gap-2 text-fuchsia-400 font-bold text-xs">
+                      <span>🎧 محرك التحدث (TTS):</span>
+                    </div>
+                    <p className="text-xs text-slate-300 font-mono">canopylabs/orpheus-arabic-saudi</p>
+                    <p className="text-[11px] text-slate-400">
+                      الصوت المعتمد: <span className="text-fuchsia-300 font-bold">Lulwa (صوت نسائي سعودي راقٍ)</span> بصيغة Opus و WAV لرسائل الواتساب والتيليجرام وودجت الموقع.
+                    </p>
+                    <button
+                      onClick={playLulwaVoice}
+                      disabled={playingVoice}
+                      className="mt-3 px-4 py-2 bg-fuchsia-600 hover:bg-fuchsia-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-2 shadow"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      <span>{playingVoice ? 'جاري تشغيل الصوت...' : '🔊 تجربة استماع صوت لولوة'}</span>
+                    </button>
+                  </div>
+
+                  <div className="p-4 bg-slate-900/80 border border-slate-800 rounded-xl space-y-2">
+                    <div className="flex items-center gap-2 text-indigo-400 font-bold text-xs">
+                      <span>🎙️ محرك السمع والتفريغ (STT):</span>
+                    </div>
+                    <p className="text-xs text-slate-300 font-mono">whisper-large-v3-turbo</p>
+                    <p className="text-[11px] text-slate-400">
+                      يتعرف فورياً وبدقة تامة على كافة اللهجات العربية (المصرية، الخليجية، الشامية، الفصحى) في رسائل الواتساب وتيليجرام وودجت الموقع.
+                    </p>
+                    <div className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-400 bg-emerald-950/60 px-3 py-1.5 rounded-lg border border-emerald-800/60">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>تحويل تلقائي للفويسات 24/7</span>
+                    </div>
                   </div>
                 </div>
               </div>

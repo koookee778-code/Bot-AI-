@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "daemons": {
+    "bot": {
+      "root": "./",
+      "entrypoint": "Dockerfile",
+      "instances": {
+        "fra1": 1
+      },
+      "resources": {
+        "requests": {
+          "memory": "2Gi"
+        }
+      }
+    }
+  }
+}
