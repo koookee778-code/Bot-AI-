@@ -7,6 +7,9 @@ import http from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import QRCode from 'qrcode';
 import whatsapp from 'whatsapp-web.js';
 const { Client, LocalAuth, MessageMedia } = whatsapp;
@@ -1235,30 +1238,36 @@ const saveConfigToDisk = () => {
 // Multi-level lock and process cleanup helpers to prevent Puppeteer crashes on reload
 function cleanAllChromiumLocks() {
     try {
-        const baseAuthDir = path.join(process.cwd(), '.wwebjs_auth');
-        if (!fs.existsSync(baseAuthDir)) return;
+        const authDirs = [
+            path.join(process.cwd(), '.wwebjs_auth'),
+            path.join(__dirname, '.wwebjs_auth')
+        ];
 
-        const removeLocksRecursively = (dir: string) => {
-            if (!fs.existsSync(dir)) return;
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
-            for (const entry of entries) {
-                const fullPath = path.join(dir, entry.name);
-                if (entry.isDirectory()) {
-                    removeLocksRecursively(fullPath);
-                } else if (
-                    entry.name.startsWith('Singleton') ||
-                    entry.name.endsWith('.lock') ||
-                    entry.name === 'parent._lock'
-                ) {
-                    try {
-                        fs.unlinkSync(fullPath);
-                        console.log(`[WhatsApp Cleanup] Cleared stale lock: ${entry.name}`);
-                    } catch {}
+        for (const baseAuthDir of authDirs) {
+            if (!fs.existsSync(baseAuthDir)) continue;
+
+            const removeLocksRecursively = (dir: string) => {
+                if (!fs.existsSync(dir)) return;
+                const entries = fs.readdirSync(dir, { withFileTypes: true });
+                for (const entry of entries) {
+                    const fullPath = path.join(dir, entry.name);
+                    if (entry.isDirectory()) {
+                        removeLocksRecursively(fullPath);
+                    } else if (
+                        entry.name.startsWith('Singleton') ||
+                        entry.name.endsWith('.lock') ||
+                        entry.name === 'parent._lock'
+                    ) {
+                        try {
+                            fs.unlinkSync(fullPath);
+                            console.log(`[WhatsApp Cleanup] Cleared stale lock: ${entry.name}`);
+                        } catch {}
+                    }
                 }
-            }
-        };
+            };
 
-        removeLocksRecursively(baseAuthDir);
+            removeLocksRecursively(baseAuthDir);
+        }
     } catch (err) {
         console.warn('[WhatsApp Cleanup] Error during lock cleanup:', err);
     }
@@ -1267,6 +1276,9 @@ function cleanAllChromiumLocks() {
 function killOrphanedChromeProcesses() {
     try {
         if (process.platform === 'win32') {
+            try {
+                execSync('powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name = \'chrome.exe\'\\" | Where-Object { $_.CommandLine -like \'*--headless*\' -or $_.CommandLine -like \'*wwebjs_auth*\' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"');
+            } catch {}
             return;
         }
         const psOutput = execSync('ps aux || true').toString();
@@ -1701,7 +1713,7 @@ async function startServer() {
             killOrphanedChromeProcesses();
             cleanAllChromiumLocks();
 
-            const authPath = path.join(process.cwd(), '.wwebjs_auth');
+            const authPath = path.resolve(__dirname, '.wwebjs_auth');
             if (!fs.existsSync(authPath)) {
                 fs.mkdirSync(authPath, { recursive: true });
             }
@@ -1711,15 +1723,11 @@ async function startServer() {
                     clientId: "client-one",
                     dataPath: authPath
                 }),
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-                webVersionCache: {
-                    type: 'remote',
-                    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html',
-                },
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
                     headless: true,
                     protocolTimeout: 120000,
+                    ignoreDefaultArgs: ['--enable-automation'],
                     args: [
                         '--no-sandbox', 
                         '--disable-setuid-sandbox',
@@ -1733,13 +1741,12 @@ async function startServer() {
                         '--disable-renderer-backgrounding',
                         '--disable-extensions',
                         '--disable-blink-features=AutomationControlled',
-                        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
                         '--window-size=1280,800'
                     ],
                     timeout: 120000
                 },
                 authTimeoutMs: 120000,
-                qrMaxRetries: 0, // 0 disables retries counter in whatsapp-web.js, allowing continuous live rotation without destruction!
+                qrMaxRetries: 0,
                 takeoverOnConflict: true,
                 takeoverTimeoutMs: 10000
             });
@@ -2180,15 +2187,12 @@ async function startServer() {
                         (window as any).AuthStore.Cmd.refreshQR();
                         return 'AuthStore.Cmd.refreshQR';
                     }
-                    // 2. Click WhatsApp Web's reload overlay button or canvas
+                    // 2. Click WhatsApp Web's reload overlay button IF EXPLICITLY SHOWN
                     const selectors = [
                         'button[aria-label*="reload" i]',
                         'button[aria-label*="QR" i]',
                         'span[data-icon="refresh"]',
-                        'div[role="button"][data-ref]',
-                        '[data-ref] > div[role="button"]',
-                        'div[data-ref]',
-                        'canvas'
+                        '[data-ref] [role="button"]'
                     ];
                     for (const s of selectors) {
                         const el = document.querySelector(s);
@@ -2206,27 +2210,10 @@ async function startServer() {
             const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve('timeout'), 3500));
             const result = await Promise.race([refreshAction, timeoutPromise]);
             console.log(`[WhatsApp QR Refresh] Action result (${reason}):`, result);
-
-            // If QR is severely expired (> 75s without new QR), recreate client cleanly
-            if (lastQrTimestamp > 0 && (now - lastQrTimestamp > 75000)) {
-                console.log("[WhatsApp QR Refresh] QR severely stale (> 75s). Re-launching client cleanly...");
-                restartWhatsappClient().catch(() => {});
-            }
         } catch (err: any) {
             console.warn("[WhatsApp QR Refresh] Refresh exception:", err?.message || err);
         }
     }
-
-    // Active Dynamic QR Rotator:
-    // If waiting for pairing and current QR is between 18s and 75s old, click refresh!
-    setInterval(() => {
-        if (whatsappClient && !isWhatsappConnected && !isStartingWhatsApp) {
-            const age = lastQrTimestamp > 0 ? (Date.now() - lastQrTimestamp) : 0;
-            if (age >= 18000 && age < 80000) {
-                triggerQrRefresh(`auto_rotate_${Math.round(age / 1000)}s`).catch(() => {});
-            }
-        }
-    }, 4000);
 
     app.post(['/api/whatsapp/refresh-qr', '/api/whatsapp/refresh'], async (req, res) => {
         try {
@@ -2855,7 +2842,7 @@ async function startServer() {
                             qrImg.src = qrBase64;
                             qrImg.style.display = 'block';
                             qrSpinner.style.display = 'none';
-                            timeLeft = 20;
+                            timeLeft = 25;
                             if (qrBoxWrap) {
                                 qrBoxWrap.classList.add('border-emerald-500/80');
                                 setTimeout(() => qrBoxWrap.classList.remove('border-emerald-500/80'), 800);
@@ -2910,12 +2897,12 @@ async function startServer() {
 
                         timeLeft--;
                         if (timeLeft <= 0) {
-                            timeLeft = 20;
-                            requestNewQR(true);
+                            timeLeft = 25;
+                            pollWhatsAppStatus();
                         }
                         if (countdownEl) countdownEl.innerText = timeLeft;
                         if (progressBar) {
-                            const pct = Math.max(0, Math.min(100, (timeLeft / 20) * 100));
+                            const pct = Math.max(0, Math.min(100, (timeLeft / 25) * 100));
                             progressBar.style.width = pct + '%';
                             if (pct < 30) {
                                 progressBar.className = "bg-amber-500 h-full transition-all duration-1000";
