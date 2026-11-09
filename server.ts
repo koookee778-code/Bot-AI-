@@ -1711,6 +1711,11 @@ async function startServer() {
                     clientId: "client-one",
                     dataPath: authPath
                 }),
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                webVersionCache: {
+                    type: 'remote',
+                    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html',
+                },
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
                     headless: true,
@@ -1727,7 +1732,8 @@ async function startServer() {
                         '--disable-backgrounding-occluded-windows',
                         '--disable-renderer-backgrounding',
                         '--disable-extensions',
-                        '--disable-features=site-per-process,AudioServiceOutOfProcess',
+                        '--disable-blink-features=AutomationControlled',
+                        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
                         '--window-size=1280,800'
                     ],
                     timeout: 120000
@@ -2115,6 +2121,9 @@ async function startServer() {
         }
         killOrphanedChromeProcesses();
         cleanAllChromiumLocks();
+        // Allow operating system and Docker volume mount 2 seconds to release file handles
+        await new Promise(r => setTimeout(r, 2000));
+
         if (cleanAuth) {
             const authPath = path.join(process.cwd(), '.wwebjs_auth');
             try {
@@ -2123,6 +2132,7 @@ async function startServer() {
             } catch (e) {}
             hasSavedSession = false;
             saveConfigToDisk();
+            await new Promise(r => setTimeout(r, 1000));
         }
         qrCodeDataUrl = null;
         lastQrTimestamp = 0;
@@ -2133,7 +2143,9 @@ async function startServer() {
     async function triggerQrRefresh(reason = 'manual') {
         const now = Date.now();
         if (isWhatsappConnected) return;
-        if (now - lastRefreshAttempt < 4000) return; // Throttle to max once every 4 seconds
+        // Don't interrupt client within its first 25 seconds of starting up
+        if (now - lastClientStartTime < 25000) return;
+        if (now - lastRefreshAttempt < 5000) return; // Throttle to max once every 5 seconds
         lastRefreshAttempt = now;
 
         if (!whatsappClient) {
@@ -2147,7 +2159,7 @@ async function startServer() {
         const pupPage = (whatsappClient as any).pupPage;
         if (!pupPage || typeof pupPage.evaluate !== 'function' || pupPage.isClosed?.()) {
             console.log(`[WhatsApp QR Refresh] pupPage not ready or closed (${reason}).`);
-            if (now - lastClientStartTime > 35000) {
+            if (now - lastClientStartTime > 40000) {
                 restartWhatsappClient().catch(() => {});
             }
             return;
@@ -2680,8 +2692,9 @@ async function startServer() {
     });
 
     app.get(['/api/whatsapp-qr.png', '/api/qr.png'], (req, res) => {
+        const timeSinceStart = Date.now() - lastClientStartTime;
         const ageSec = lastQrTimestamp > 0 ? Math.round((Date.now() - lastQrTimestamp) / 1000) : 999;
-        if (!isWhatsappConnected && (ageSec > 18 || !qrCodeDataUrl)) {
+        if (!isWhatsappConnected && !isStartingWhatsApp && timeSinceStart > 30000 && (ageSec > 25 || !qrCodeDataUrl)) {
             triggerQrRefresh(`png_endpoint_stale_${ageSec}s`).catch(() => {});
         }
         if (qrCodeDataUrl) {
@@ -2701,8 +2714,9 @@ async function startServer() {
         if (!whatsappClient && !isStartingWhatsApp) {
             startWhatsappClient().catch(() => {});
         }
+        const timeSinceStart = Date.now() - lastClientStartTime;
         const ageSec = lastQrTimestamp > 0 ? Math.round((Date.now() - lastQrTimestamp) / 1000) : 999;
-        if (!isWhatsappConnected && (ageSec > 16 || !qrCodeDataUrl)) {
+        if (!isWhatsappConnected && !isStartingWhatsApp && timeSinceStart > 30000 && (ageSec > 25 || !qrCodeDataUrl)) {
             triggerQrRefresh(`page_load_stale_${ageSec}s`).catch(() => {});
         }
 
