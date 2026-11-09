@@ -1715,10 +1715,14 @@ async function startServer() {
                     clientId: "client-one",
                     dataPath: authPath
                 }),
+                webVersionCache: {
+                    type: 'remotePath',
+                    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1053716622-alpha.html',
+                },
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
                     headless: true,
-                    protocolTimeout: 120000,
+                    protocolTimeout: 300000,
                     ignoreDefaultArgs: ['--enable-automation'],
                     args: [
                         '--no-sandbox', 
@@ -1726,7 +1730,6 @@ async function startServer() {
                         '--disable-dev-shm-usage',
                         '--disable-accelerated-2d-canvas',
                         '--no-first-run',
-                        '--no-zygote',
                         '--disable-gpu',
                         '--disable-background-timer-throttling',
                         '--disable-backgrounding-occluded-windows',
@@ -1735,9 +1738,9 @@ async function startServer() {
                         '--disable-blink-features=AutomationControlled',
                         '--window-size=1280,800'
                     ],
-                    timeout: 120000
+                    timeout: 300000
                 },
-                authTimeoutMs: 120000,
+                authTimeoutMs: 300000,
                 qrMaxRetries: 0,
                 takeoverOnConflict: true,
                 takeoverTimeoutMs: 10000
@@ -2654,10 +2657,6 @@ async function startServer() {
             startWhatsappClient().catch(() => {});
         }
         const ageSec = lastQrTimestamp > 0 ? Math.round((now - lastQrTimestamp) / 1000) : 999;
-        // If QR is stale or missing and client has been running for 40s+, trigger safe refresh
-        if (!isWhatsappConnected && !isStartingWhatsApp && (ageSec > 20 || !qrCodeDataUrl) && (now - lastClientStartTime > 40000)) {
-            triggerQrRefresh(`status_poll_stale_${ageSec}s`).catch(() => {});
-        }
         res.json({ 
             connected: isWhatsappConnected, 
             qr: qrCodeDataUrl,
@@ -2671,11 +2670,6 @@ async function startServer() {
     });
 
     app.get(['/api/whatsapp-qr.png', '/api/qr.png'], (req, res) => {
-        const timeSinceStart = Date.now() - lastClientStartTime;
-        const ageSec = lastQrTimestamp > 0 ? Math.round((Date.now() - lastQrTimestamp) / 1000) : 999;
-        if (!isWhatsappConnected && !isStartingWhatsApp && timeSinceStart > 30000 && (ageSec > 25 || !qrCodeDataUrl)) {
-            triggerQrRefresh(`png_endpoint_stale_${ageSec}s`).catch(() => {});
-        }
         if (qrCodeDataUrl) {
             const base64Data = qrCodeDataUrl.replace(/^data:image\/png;base64,/, '');
             const img = Buffer.from(base64Data, 'base64');
@@ -2692,11 +2686,6 @@ async function startServer() {
     app.get(['/qr', '/link', '/connect', '/whatsapp'], (req, res) => {
         if (!whatsappClient && !isStartingWhatsApp) {
             startWhatsappClient().catch(() => {});
-        }
-        const timeSinceStart = Date.now() - lastClientStartTime;
-        const ageSec = lastQrTimestamp > 0 ? Math.round((Date.now() - lastQrTimestamp) / 1000) : 999;
-        if (!isWhatsappConnected && !isStartingWhatsApp && timeSinceStart > 30000 && (ageSec > 25 || !qrCodeDataUrl)) {
-            triggerQrRefresh(`page_load_stale_${ageSec}s`).catch(() => {});
         }
 
         if (isWhatsappConnected) {
