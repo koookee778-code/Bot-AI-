@@ -1100,7 +1100,7 @@ async function callAI(userId: string, userMessage: string, isAdmin: boolean, rea
                 while (currentTurn < MAX_TURNS) {
                     currentTurn++;
                     const response = await gemini.models.generateContent({
-                        model: 'gemini-2.5-flash',
+                        model: 'gemini-3.8-flash',
                         contents: conversationContents,
                         config: {
                             systemInstruction: systemPrompt,
@@ -1693,10 +1693,10 @@ async function startServer() {
         if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
         startupSafetyTimer = setTimeout(() => {
             if (isStartingWhatsApp && !isWhatsappConnected) {
-                console.warn("[WhatsApp Watchdog] 45s startup safety timeout triggered. Resetting isStartingWhatsApp.");
+                console.warn("[WhatsApp Watchdog] 120s startup safety timeout triggered. Resetting isStartingWhatsApp.");
                 isStartingWhatsApp = false;
             }
-        }, 45000);
+        }, 120000);
 
         try {
             console.log("[WhatsApp] Initializing WhatsApp permanent client...");
