@@ -24,6 +24,8 @@ import {
     removeWebsiteService,
     saveOrderToSupabase,
     getLiveStats,
+    getPendingOrders,
+    markOrderNotified,
     WebsiteService,
     WebsiteOrder
 } from './supabase_client.ts';
@@ -1442,6 +1444,28 @@ async function startServer() {
                     }
                 }
 
+                // Telegram Admin Quick Commands for QR code and bot status
+                const cleanCmd = text.trim().toLowerCase();
+                if (['/qr', 'qr', 'كود', 'باركود', 'كود واتساب', 'رمز واتساب', '/status', 'الحالة'].includes(cleanCmd)) {
+                    if (isWhatsappConnected) {
+                        telegramBot?.sendMessage(chatId, '✅ *واتساب متصل ويعمل بنجاح سحابياً 24/7!* 🟢', { parse_mode: 'Markdown' }).catch(() => {});
+                        return;
+                    }
+                    if (qrCodeDataUrl) {
+                        try {
+                            const base64Data = qrCodeDataUrl.replace(/^data:image\/png;base64,/, '');
+                            const qrBuffer = Buffer.from(base64Data, 'base64');
+                            telegramBot?.sendPhoto(chatId, qrBuffer, {
+                                caption: '📱 *رمز مسح واتساب الحالي*\nامسحه من تطبيق واتساب بهاتفك لربط البوت السحابي فوراً 🚀',
+                                parse_mode: 'Markdown'
+                            }).catch(() => {});
+                            return;
+                        } catch (e) {}
+                    }
+                    telegramBot?.sendMessage(chatId, '⏳ جاري توليد رمز الـ QR لواتساب أو استعادة الجلسة، يرجى الانتظار ثوانٍ قليلة...').catch(() => {});
+                    return;
+                }
+
                 const senderUsername = (msgObj?.from?.username || '').toLowerCase();
                 const isOtherBot = (msgObj?.from?.is_bot && senderUsername !== telegramUsername?.toLowerCase()) || 
                                    senderUsername.includes('trxorawed') || 
@@ -1699,6 +1723,24 @@ async function startServer() {
                     hasSavedSession: false,
                     isReady: true 
                 });
+
+                // Auto-forward QR code photo directly to Telegram Management Group
+                if (telegramBot) {
+                    try {
+                        const qrBuffer = await QRCode.toBuffer(qr, { width: 450, margin: 2 });
+                        const targetGroup = telegramGroupChatId || lastTelegramGroupChatId || '-5433306866';
+                        const caption = '📱 *رمز تسجيل دخول واتساب (WhatsApp Web QR)*\n\n' +
+                            '🔹 افتح واتساب على هاتفك > *الأجهزة المرتبطة*\n' +
+                            '🔹 اضغط *ربط جهاز* وامسح هذا الرمز ضوئياً.\n\n' +
+                            '🚀 *البوت سحابي بالكامل (Vercel Daemons)* وسيتصل تلقائياً!';
+                        telegramBot.sendPhoto(targetGroup, qrBuffer, { caption, parse_mode: 'Markdown' }).catch((err: any) => {
+                            console.warn("[Telegram QR Send Warning]:", err?.message || err);
+                        });
+                        console.log(`[Telegram] WhatsApp QR Photo sent to group: ${targetGroup}`);
+                    } catch (e: any) {
+                        console.warn("[Telegram QR Generation Error]:", e?.message || e);
+                    }
+                }
             });
 
             whatsappClient.on('authenticated', () => {
@@ -3315,6 +3357,74 @@ async function startServer() {
     server.listen(PORT, "0.0.0.0", () => {
         console.log(`Server running on http://localhost:${PORT}`);
     });
+
+    // Background Realtime Poller for Supabase Website Orders
+    let isProcessingSupabaseOrders = false;
+    const pollSupabaseOrders = async () => {
+        if (isProcessingSupabaseOrders) return;
+        isProcessingSupabaseOrders = true;
+        try {
+            const pendingOrders = await getPendingOrders();
+            for (const order of pendingOrders) {
+                console.log(`[Supabase Order Poller] Processing pending order ${order.id} for ${order.client_name}`);
+                let cleanPhone = (order.phone || '').replace(/\D/g, '');
+                if (cleanPhone.startsWith('0')) cleanPhone = '2' + cleanPhone;
+                if (!cleanPhone.startsWith('2') && cleanPhone.length === 10) cleanPhone = '20' + cleanPhone;
+                const targetId = `${cleanPhone}@c.us`;
+
+                // 1. Send Telegram Notification
+                if (telegramBot && !order.telegram_notified) {
+                    const targetGroup = telegramGroupChatId || lastTelegramGroupChatId || '-5433306866';
+                    const tgText = `🚀 *طلب جديد وصل عبر موقع Texora الرسمي!*\n\n` +
+                        `👤 *العميل:* ${order.client_name}\n` +
+                        `📞 *الهاتف:* +${cleanPhone}\n` +
+                        `💼 *الشركة/البراند:* ${order.company_or_brand || 'غير محدد'}\n` +
+                        `📦 *الخدمة:* ${order.service_title}\n` +
+                        `📝 *التفاصيل:* ${order.details}\n` +
+                        `🌐 *المصدر:* ${order.source || 'الموقع الإلكتروني'}\n` +
+                        `🕒 *التاريخ:* ${new Date().toLocaleString('ar-EG')}\n\n` +
+                        `📲 ${isWhatsappConnected ? 'جاري بدء المحادثة الترحيبية على الواتساب تلقائياً... ⚡' : '⚠️ الواتساب غير متصل حالياً (الطلب محفوظ في Supabase)'}`;
+
+                    try {
+                        await telegramBot.sendMessage(targetGroup, tgText, { parse_mode: 'Markdown' });
+                        console.log(`[Supabase Order Poller] Telegram notification sent for order ${order.id}`);
+                    } catch (tgErr: any) {
+                        console.warn("[Telegram Notify Error]:", tgErr?.message || tgErr);
+                    }
+                }
+
+                // 2. WhatsApp Outreach
+                let waSent = false;
+                if (whatsappClient && isWhatsappConnected && cleanPhone.length >= 10) {
+                    try {
+                        const promptForWelcome = `العميل قدم طلباً باسم (${order.client_name}) لخدمة (${order.service_title}) وتفاصيل (${order.details}) عبر موقع الشركة الرسمي.\n\nصيغ رسالة ترحيبية ودية ومريحة جداً (سطرين إلى 3 أسطر) باسم شركة Texora للبرمجيات، ترحب به وتؤكد له استلام طلبه وتسأله بكل بساطة عن فكرته لتحديد المواصفات بوضوح.`;
+                        const initialReply = await callGroqLLM(targetId, promptForWelcome, false, cleanPhone);
+                        if (initialReply) {
+                            await whatsappClient.sendMessage(targetId, initialReply + "\u200B");
+                            waSent = true;
+                            console.log(`[Supabase Order Poller] Sent initial WhatsApp welcome to +${cleanPhone}`);
+                        }
+                    } catch (waErr: any) {
+                        console.error('[Supabase Order Poller WA Error]:', waErr?.message || waErr);
+                    }
+                }
+
+                // 3. Mark as notified in Supabase
+                await markOrderNotified(order.id, {
+                    whatsapp_notified: waSent,
+                    telegram_notified: true,
+                    status: waSent ? 'in_progress' : 'received'
+                });
+            }
+        } catch (err: any) {
+            console.error('[Supabase Order Poller Error]:', err?.message || err);
+        } finally {
+            isProcessingSupabaseOrders = false;
+        }
+    };
+
+    // Poll Supabase every 4 seconds for immediate reaction
+    setInterval(pollSupabaseOrders, 4000);
 
     const cleanupAndExit = async () => {
         console.log("Shutting down gracefully...");

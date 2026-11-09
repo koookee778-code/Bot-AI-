@@ -5,7 +5,7 @@
       "root": "./",
       "entrypoint": "Dockerfile",
       "instances": {
-        "fra1": 1
+        "iad1": 1
       },
       "resources": {
         "requests": {

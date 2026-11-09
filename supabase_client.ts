@@ -182,3 +182,43 @@ export async function getLiveStats(): Promise<{
         };
     }
 }
+
+/**
+ * Fetches all pending website orders from Supabase that need WhatsApp outreach
+ */
+export async function getPendingOrders(): Promise<WebsiteOrder[]> {
+    try {
+        const { data, error } = await supabase
+            .from('orders')
+            .select('*')
+            .eq('whatsapp_notified', false)
+            .order('created_at', { ascending: true })
+            .limit(10);
+
+        if (error) throw error;
+        return (data || []) as WebsiteOrder[];
+    } catch (err: any) {
+        console.error('[Supabase getPendingOrders Error]:', err?.message || err);
+        return [];
+    }
+}
+
+/**
+ * Marks an order as notified via WhatsApp and/or Telegram in Supabase
+ */
+export async function markOrderNotified(
+    orderId: string, 
+    updates: { whatsapp_notified?: boolean; telegram_notified?: boolean; status?: string }
+): Promise<void> {
+    try {
+        await supabase
+            .from('orders')
+            .update({
+                ...updates,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', orderId);
+    } catch (err: any) {
+        console.error('[Supabase markOrderNotified Error]:', err?.message || err);
+    }
+}

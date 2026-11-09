@@ -24,7 +24,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install production dependencies
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 # Copy application source code
 COPY . .
@@ -33,4 +33,4 @@ COPY . .
 EXPOSE 3001
 
 # Run the Bot server
-CMD ["npx", "tsx", "server.ts"]
+CMD ["./node_modules/.bin/tsx", "server.ts"]
