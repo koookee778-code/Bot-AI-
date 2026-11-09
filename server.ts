@@ -2868,10 +2868,6 @@ async function startServer() {
             </body>
             </html>
         `);
-                </script>
-            </body>
-            </html>
-        `);
     });
 
     app.post('/api/clear-memory', (req, res) => {
