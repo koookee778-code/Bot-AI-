@@ -100,7 +100,7 @@ export const DEFAULT_TEXORA_INSTRUCTIONS = `أنت المساعد الذكي ا�
 
 ${TEXORA_KNOWLEDGE_BASE}`;
 
-let adminNumber = '';
+let adminNumber = process.env.ADMIN_NUMBER || '201093625469';
 let globalInstructions = DEFAULT_TEXORA_INSTRUCTIONS;
 let telegramBot: TelegramBot | null = null;
 let whatsappClient: any = null;
@@ -944,26 +944,32 @@ async function executeTool(funcName: string, args: any, userId: string, isAdmin:
             const clientPhone = (chatHistories[userId] as any)?.clientPhone || userId.replace('@c.us', '').replace('@lid', '');
             const savedClient = clientsDB[clientPhone];
             const clientNameStr = savedClient?.name ? `\n👤 *اسم العميل:* ${savedClient.name}` : '';
-            const finalMessage = `🚀 *طلب وتصميم مشروع جديد - شركة Texora للبرمجيات* 🚀\n\n` + 
-                                 (args.messageDetails || 'تم استلام تفاصيل المشروع') + 
-                                 clientNameStr +
-                                 `\n📞 *رقم هاتف العميل للمتابعة:* +${clientPhone}\n🤖 _مُرسل آلياً عبر مساعد Texora الذكي_`;
+            
+            let finalMessage = args.messageDetails || args.message || 'تم استلام تفاصيل المشروع بنجاح';
+            // Only format as a project lead report if it's not a direct custom message from admin
+            if (!isAdmin && clientPhone && clientPhone !== userId) {
+                finalMessage = `🚀 *طلب وتصميم مشروع جديد - شركة Texora للبرمجيات* 🚀\n\n` + 
+                               finalMessage + 
+                               clientNameStr +
+                               `\n📞 *رقم هاتف العميل للمتابعة:* +${clientPhone}\n🤖 _مُرسل آلياً عبر مساعد Texora الذكي_`;
+            }
 
-            let cleanAdmin = adminNumber ? adminNumber.replace(/\D/g, '') : '';
+            let cleanAdmin = (adminNumber || '201093625469').replace(/\D/g, '');
             let rawTarget = args.number ? args.number.toString().replace(/\D/g, '') : cleanAdmin;
+            if (rawTarget.startsWith('0')) rawTarget = '2' + rawTarget;
+            if (rawTarget.length <= 10 && rawTarget.startsWith('1')) rawTarget = '20' + rawTarget;
             
             if (whatsappClient && isWhatsappConnected && rawTarget && rawTarget.length >= 8) {
-                if (rawTarget.startsWith('0')) rawTarget = '2' + rawTarget;
                 const targetId = `${rawTarget}@c.us`;
-                await whatsappClient.sendMessage(targetId, finalMessage);
-                console.log(`[WhatsApp] Successfully sent independent msg to ${targetId}`);
-                return "تم إرسال تقرير الطلب للرقم الخارجي بنجاح وبشكل متخفي.";
+                await whatsappClient.sendMessage(targetId, finalMessage + "\u200B");
+                console.log(`[WhatsApp] Successfully sent independent msg to ${targetId}: "${finalMessage.substring(0, 40)}"`);
+                return `تم إرسال الرسالة بنجاح عبر الواتساب إلى الرقم +${rawTarget}.`;
             } else {
-                return "تم تسجيل وإعداد تقرير الطلب للإدارة بنجاح في النظام.";
+                return `تم تسجيل وتوثيق الرسالة في النظام للرقم +${rawTarget}. (حالة الواتساب: ${isWhatsappConnected ? 'متصل' : 'غير متصل'})`;
             }
         } catch (err: any) {
             console.error("[WhatsApp] Error sending msg to specific number:", err?.message || err);
-            return "تم توثيق بيانات وتفاصيل الطلب في النظام.";
+            return `حدث خطأ أثناء محاولة الإرسال للرقم: ${err?.message || err}`;
         }
     } else if (funcName === 'add_website_service') {
         try {
@@ -1022,25 +1028,61 @@ async function executeTool(funcName: string, args: any, userId: string, isAdmin:
 
 async function callGroqFallback(userId: string, userMessage: string, isAdmin: boolean, systemPrompt: string): Promise<string> {
     const modelsToTry = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "allam-2-7b"];
+    const availableTools = isAdmin 
+        ? tools 
+        : tools.filter(t => ['save_client_info', 'send_message_to_number', 'web_search', 'read_url'].includes(t.function.name));
 
     for (const modelName of modelsToTry) {
         try {
-            const cleanMessages = cleanMessagesForTextOnly([
+            const cleanMessages: any[] = [
                 { role: 'system', content: systemPrompt },
-                ...chatHistories[userId]
-            ]);
+                ...cleanMessagesForTextOnly(chatHistories[userId] || [])
+            ];
 
-            const completion = await groq.chat.completions.create({
-                model: modelName,
-                messages: cleanMessages as any,
-                temperature: 0.6,
-                max_completion_tokens: 512
-            });
+            let currentTurn = 0;
+            const MAX_TURNS = 3;
 
-            const reply = completion.choices[0]?.message?.content;
-            if (reply && reply.trim()) {
-                chatHistories[userId].push({ role: 'assistant', content: reply.trim() });
-                return reply.trim();
+            while (currentTurn < MAX_TURNS) {
+                currentTurn++;
+                const completion = await groq.chat.completions.create({
+                    model: modelName,
+                    messages: cleanMessages,
+                    tools: availableTools as any,
+                    tool_choice: 'auto',
+                    temperature: 0.6,
+                    max_completion_tokens: 768
+                });
+
+                const choice = completion.choices[0];
+                const msg = choice?.message;
+                if (!msg) break;
+
+                // Handle tool execution
+                if (msg.tool_calls && msg.tool_calls.length > 0) {
+                    console.log(`[Groq AI] Executing ${msg.tool_calls.length} tool call(s) with ${modelName}...`);
+                    cleanMessages.push(msg);
+
+                    for (const tc of msg.tool_calls) {
+                        let parsedArgs: any = {};
+                        try {
+                            parsedArgs = JSON.parse(tc.function.arguments || '{}');
+                        } catch {}
+                        const funcResult = await executeTool(tc.function.name, parsedArgs, userId, isAdmin, userMessage);
+                        cleanMessages.push({
+                            role: 'tool',
+                            tool_call_id: tc.id,
+                            content: String(funcResult || 'تم التنفيذ بنجاح')
+                        });
+                    }
+                    continue; // Send tool responses back to model
+                }
+
+                // Normal assistant text reply
+                const reply = msg.content;
+                if (reply && reply.trim()) {
+                    chatHistories[userId].push({ role: 'assistant', content: reply.trim() });
+                    return reply.trim();
+                }
             }
         } catch (e: any) {
             console.warn(`[Groq Fallback] Model ${modelName} attempt:`, e?.message || e);
@@ -1207,7 +1249,8 @@ let reconnectTimer: NodeJS.Timeout | null = null;
 try {
     if (fs.existsSync(CONFIG_FILE)) {
         const parsed = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-        if (parsed.adminNumber) adminNumber = parsed.adminNumber;
+        if (parsed.adminNumber && parsed.adminNumber.trim()) adminNumber = parsed.adminNumber;
+        else adminNumber = process.env.ADMIN_NUMBER || '201093625469';
         if (parsed.globalInstructions) globalInstructions = parsed.globalInstructions;
         if (parsed.telegramToken) telegramToken = parsed.telegramToken;
         if (parsed.telegramChatId) telegramChatId = parsed.telegramChatId;
@@ -1952,20 +1995,32 @@ async function startServer() {
 
                     // Identify owner / self / admin
                     const myUserNumber = (whatsappClient?.info?.wid?.user || '').replace(/\D/g, '');
-                    const cleanAdminNumber = (adminNumber || '').replace(/\D/g, '');
+                    const cleanAdminNumber = (adminNumber || '201093625469').replace(/\D/g, '');
+
+                    // Extract contact real phone number if available (handles LIDs)
+                    let contactPhone = '';
+                    try {
+                        const contact = await msg.getContact();
+                        if (contact?.number) contactPhone = contact.number.replace(/\D/g, '');
+                    } catch {}
 
                     const isMessageToSelf = (myUserNumber && chatUser === myUserNumber) ||
-                                            (cleanAdminNumber && chatUser === cleanAdminNumber) ||
+                                            (cleanAdminNumber && (chatUser === cleanAdminNumber || contactPhone === cleanAdminNumber)) ||
                                             (toStr === fromStr);
 
-                    // Prevent answering outgoing messages sent to other people
+                    // Prevent answering outgoing messages sent to other people from mobile app
                     if (msg.fromMe && !isMessageToSelf) {
                         return;
                     }
 
-                    const isFromAdmin = (cleanAdminNumber && (conversationId.includes(cleanAdminNumber) || chatUser === cleanAdminNumber)) ? true : (isMessageToSelf && msg.fromMe);
+                    const isFromAdmin = (cleanAdminNumber && (
+                        conversationId.includes(cleanAdminNumber) || 
+                        chatUser === cleanAdminNumber || 
+                        contactPhone === cleanAdminNumber ||
+                        fromStr.includes(cleanAdminNumber)
+                    )) ? true : (isMessageToSelf && msg.fromMe);
 
-                    console.log(`[WhatsApp] Processing valid message. conversationId: ${conversationId}, isAdmin: ${isFromAdmin}, isToSelf: ${isMessageToSelf}`);
+                    console.log(`[WhatsApp] Processing valid message. conversationId: ${conversationId}, isAdmin: ${isFromAdmin}, isToSelf: ${isMessageToSelf}, contact: ${contactPhone || chatUser}`);
 
                     // Admin instruction change shortcut
                     if (isFromAdmin && textBody.includes('تغيير التعليمات')) {
