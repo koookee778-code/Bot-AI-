@@ -210,6 +210,7 @@ setInterval(async () => {
 }, 60000);
 
 const apiKeys = [
+    process.env.GROQ_API_KEY || '',
     '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',
     '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',
     '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',
@@ -219,10 +220,10 @@ const apiKeys = [
     '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',
     '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',
     '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'
-];
+].filter(k => k && k.trim().length > 10);
 
 let currentKeyIndex = 0;
-let groq = new Groq({ apiKey: apiKeys[currentKeyIndex] });
+let groq = new Groq({ apiKey: apiKeys[0] || process.env.GROQ_API_KEY || '' });
 
 function rotateGroqClient() {
     currentKeyIndex = (currentKeyIndex + 1) % apiKeys.length;
@@ -2079,6 +2080,47 @@ async function startServer() {
         }
     }, 25000);
 
+    // Active QR Auto-Refresher (every 14 seconds): clicks reload on web.whatsapp.com if QR expired
+    setInterval(async () => {
+        if (whatsappClient && !isWhatsappConnected && (whatsappClient as any).pupPage) {
+            try {
+                await (whatsappClient as any).pupPage.evaluate(() => {
+                    const reloadBtn = document.querySelector('button, [data-testid="qrcode"] + div, div[role="button"], span[data-icon="refresh"]');
+                    if (reloadBtn) {
+                        (reloadBtn as HTMLElement).click();
+                    } else if ((window as any).Store && (window as any).Store.Cmd && (window as any).Store.Cmd.refreshQR) {
+                        (window as any).Store.Cmd.refreshQR();
+                    }
+                });
+            } catch (e) {}
+        }
+    }, 14000);
+
+    app.post(['/api/whatsapp/refresh-qr', '/api/whatsapp/refresh'], async (req, res) => {
+        try {
+            console.log("[WhatsApp] User requested immediate QR refresh.");
+            if (whatsappClient && (whatsappClient as any).pupPage && !isWhatsappConnected) {
+                await (whatsappClient as any).pupPage.evaluate(() => {
+                    const reloadBtn = document.querySelector('button, [data-testid="qrcode"] + div, div[role="button"], span[data-icon="refresh"]');
+                    if (reloadBtn) {
+                        (reloadBtn as HTMLElement).click();
+                    } else if ((window as any).Store && (window as any).Store.Cmd && (window as any).Store.Cmd.refreshQR) {
+                        (window as any).Store.Cmd.refreshQR();
+                    } else {
+                        window.location.reload();
+                    }
+                });
+                return res.json({ success: true, message: 'جاري تحديث رمز الـ QR فوراً...' });
+            } else if (!whatsappClient && !isStartingWhatsApp) {
+                await startWhatsappClient();
+                return res.json({ success: true, message: 'جاري إعادة تشغيل العميل وتوليد الرمز...' });
+            }
+            res.json({ success: true, message: 'الرمز نشط ومحدث' });
+        } catch (err: any) {
+            res.status(500).json({ success: false, error: err?.message });
+        }
+    });
+
     app.post('/api/config', (req, res) => {
         const { adminNumber: phone, instructions, telegramGroupChatId: groupChatId } = req.body;
         if (phone !== undefined) adminNumber = phone.replace(/[^0-9]/g, ''); 
@@ -2568,42 +2610,81 @@ async function startServer() {
                 <title>ربط واتساب السحابي - Texora Bot</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <script src="https://cdn.tailwindcss.com"></script>
+                <script src="/socket.io/socket.io.js"></script>
             </head>
             <body class="bg-slate-950 text-white min-h-screen flex items-center justify-center p-4 font-sans">
-                <div class="bg-slate-900 border border-indigo-500/30 rounded-3xl p-8 max-w-md w-full text-center shadow-2xl">
+                <div class="bg-slate-900 border border-indigo-500/30 rounded-3xl p-6 sm:p-8 max-w-md w-full text-center shadow-2xl">
                     <div class="inline-flex items-center gap-2 px-3 py-1 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-full text-xs font-semibold mb-4">
-                        <span id="live-dot" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                        <span id="live-status-text">سيرفر Texora السحابي المباشر</span>
+                        <span id="live-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                        <span id="live-status-text">🟢 رمز QR حي ومباشر (تحديث تلقائي)</span>
                     </div>
                     <h1 class="text-2xl font-bold text-white mb-2">ربط واتساب بالذكاء الاصطناعي 📱</h1>
-                    <p class="text-slate-400 text-sm mb-6">امسح رمز الـ QR أدناه عبر هاتفك لربط البوت السحابي فوراً وبدء الردود التلقائية.</p>
+                    <p class="text-slate-400 text-xs sm:text-sm mb-4">امسح رمز الـ QR أدناه عبر هاتفك لربط البوت السحابي فوراً.</p>
                     
-                    <div class="bg-white p-4 rounded-2xl inline-block shadow-2xl mb-6 mx-auto min-w-[280px] min-h-[280px] flex items-center justify-center relative">
+                    <!-- QR Box -->
+                    <div class="bg-white p-4 rounded-2xl inline-block shadow-2xl mb-4 mx-auto min-w-[280px] min-h-[280px] flex items-center justify-center relative">
                         <img id="qr-img" src="${qrImgSrc}" alt="WhatsApp QR Code" class="w-64 h-64 object-contain rounded-xl ${imgHiddenClass}">
                         <div id="qr-spinner" class="w-64 h-64 flex flex-col items-center justify-center text-slate-700 ${spinnerHiddenClass}">
                             <div class="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-3"></div>
-                            <p class="text-xs font-bold text-slate-600">جاري تجهيز رمز الاستجابة السريعة...</p>
+                            <p class="text-xs font-bold text-slate-600">جاري جلب رمز حي جديد...</p>
                         </div>
+                    </div>
+
+                    <!-- Auto-refresh & Countdown indicator -->
+                    <div class="flex items-center justify-between text-xs text-slate-400 bg-slate-800/80 px-4 py-2.5 rounded-xl border border-slate-700/60 mb-4">
+                        <span class="flex items-center gap-1.5">
+                            <span class="w-2 h-2 rounded-full bg-indigo-400 animate-ping"></span>
+                            <span>يتجدد تلقائياً خلال: <b id="countdown-sec" class="text-indigo-300 font-mono text-sm">20</b> ثانية</span>
+                        </span>
+                        <button onclick="requestNewQR()" id="refresh-btn" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-3 py-1 rounded-lg transition active:scale-95">
+                            🔄 تجديد الآن
+                        </button>
                     </div>
 
                     <div class="text-right bg-slate-800/60 rounded-2xl p-4 text-xs space-y-2 text-slate-300 border border-slate-700/50 mb-4">
                         <div class="font-bold text-indigo-300 mb-1">خطوات الربط من الهاتف:</div>
-                        <div>1. افتح تطبيق <b>واتساب</b> على هاتفك.</div>
+                        <div>1. افتح تطبيق <b>واتساب</b> على هاتفك المحمول.</div>
                         <div>2. اضغط على خيارات (الثلاث نقاط) &gt; <b>الأجهزة المرتبطة</b>.</div>
-                        <div>3. اضغط <b>ربط جهاز</b> وامسح الرمز أعلاه بكاميرا الهاتف.</div>
+                        <div>3. اضغط <b>ربط جهاز</b> ووجّه الكاميرا نحو الرمز أعلاه.</div>
                     </div>
 
-                    <p id="footer-sync" class="text-[11px] text-slate-500">متصل بالسيرفر السحابي لحظياً.</p>
+                    <div class="flex items-center justify-between text-[11px] text-slate-500 pt-2 border-t border-slate-800">
+                        <a href="/api/whatsapp-qr.png" target="_blank" class="text-indigo-400 hover:underline">فتح كصورة مستقلة ↗</a>
+                        <a href="/" class="text-slate-400 hover:text-white">لوحة التحكم &larr;</a>
+                    </div>
                 </div>
 
                 <script>
                     const qrImg = document.getElementById('qr-img');
                     const qrSpinner = document.getElementById('qr-spinner');
                     const liveStatus = document.getElementById('live-status-text');
+                    const countdownEl = document.getElementById('countdown-sec');
+                    const refreshBtn = document.getElementById('refresh-btn');
+                    let timeLeft = 20;
 
+                    // 1. WebSocket Live Stream
+                    try {
+                        const socket = io();
+                        socket.on('whatsapp-status', (data) => {
+                            if (!data) return;
+                            if (data.connected) {
+                                window.location.reload();
+                                return;
+                            }
+                            if (data.qr) {
+                                qrImg.src = data.qr;
+                                qrImg.classList.remove('hidden');
+                                qrSpinner.classList.add('hidden');
+                                liveStatus.innerText = '🟢 رمز QR حي ومحدث الآن';
+                                timeLeft = 20;
+                            }
+                        });
+                    } catch(e) {}
+
+                    // 2. High-Frequency Poller fallback (every 2.5s)
                     async function pollWhatsAppStatus() {
                         try {
-                            const res = await fetch('/api/whatsapp-status');
+                            const res = await fetch('/api/whatsapp-status?t=' + Date.now());
                             if (!res.ok) return;
                             const data = await res.json();
                             
@@ -2615,15 +2696,43 @@ async function startServer() {
                             if (data.qr) {
                                 if (qrImg.src !== data.qr) {
                                     qrImg.src = data.qr;
+                                    timeLeft = 20;
                                 }
                                 qrImg.classList.remove('hidden');
                                 qrSpinner.classList.add('hidden');
-                                if (liveStatus) liveStatus.innerText = 'الرمز محدث وجاهز للمسح';
+                                liveStatus.innerText = '🟢 رمز QR حي ومحدث الآن';
                             }
                         } catch (err) {}
                     }
+                    setInterval(pollWhatsAppStatus, 2500);
 
-                    setInterval(pollWhatsAppStatus, 2000);
+                    // 3. Countdown timer
+                    setInterval(() => {
+                        timeLeft--;
+                        if (timeLeft <= 0) {
+                            timeLeft = 20;
+                            requestNewQR(true);
+                        }
+                        if (countdownEl) countdownEl.innerText = timeLeft;
+                    }, 1000);
+
+                    // 4. On-Demand QR Refresh
+                    async function requestNewQR(silent = false) {
+                        if (!silent && refreshBtn) {
+                            refreshBtn.innerText = '⏳ جاري...';
+                            refreshBtn.disabled = true;
+                        }
+                        try {
+                            await fetch('/api/whatsapp/refresh-qr', { method: 'POST' });
+                        } catch(e) {}
+                        setTimeout(() => {
+                            if (refreshBtn) {
+                                refreshBtn.innerText = '🔄 تجديد الآن';
+                                refreshBtn.disabled = false;
+                            }
+                            pollWhatsAppStatus();
+                        }, 1200);
+                    }
                 </script>
             </body>
             </html>
