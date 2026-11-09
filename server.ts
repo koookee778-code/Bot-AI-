@@ -1080,29 +1080,26 @@ async function callAI(userId: string, userMessage: string, isAdmin: boolean, rea
     // Append new user message to chat history
     chatHistories[userId].push({ role: 'user', content: userMessage });
 
-    // 1. Primary AI Engine: Google Gemini with Key Rotation & Model Cascade
-    const geminiModels = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3-flash', 'gemini-3.7-flash'];
-    const availableDecls = isAdmin 
-        ? geminiTools 
-        : geminiTools.filter(t => ['save_client_info', 'send_message_to_number', 'web_search', 'read_url'].includes(t.name));
+    // 1. Try Gemini AI only if a valid GEMINI_API_KEY is configured in environment
+    const configuredGeminiKey = (process.env.GEMINI_API_KEY || '').trim();
+    if (configuredGeminiKey.length > 10) {
+        try {
+            const availableDecls = isAdmin 
+                ? geminiTools 
+                : geminiTools.filter(t => ['save_client_info', 'send_message_to_number', 'web_search', 'read_url'].includes(t.name));
 
-    const contents = buildGeminiContents(chatHistories[userId]);
+            const contents = buildGeminiContents(chatHistories[userId]);
+            const gemini = getGeminiClientForKey(configuredGeminiKey);
 
-    // Try keys in pool
-    for (let keyAttempt = 0; keyAttempt < Math.max(geminiApiKeys.length, 1); keyAttempt++) {
-        const activeKey = geminiApiKeys[currentGeminiKeyIndex] || process.env.GEMINI_API_KEY || '';
-        const gemini = getGeminiClientForKey(activeKey);
-
-        for (const modelName of geminiModels) {
-            try {
+            const geminiCall = async () => {
                 let currentTurn = 0;
-                const MAX_TURNS = 5;
+                const MAX_TURNS = 4;
                 let conversationContents = [...contents];
 
                 while (currentTurn < MAX_TURNS) {
                     currentTurn++;
                     const response = await gemini.models.generateContent({
-                        model: modelName,
+                        model: 'gemini-2.5-flash',
                         contents: conversationContents,
                         config: {
                             systemInstruction: systemPrompt,
@@ -1113,7 +1110,7 @@ async function callAI(userId: string, userMessage: string, isAdmin: boolean, rea
 
                     const functionCalls = response.functionCalls;
                     if (functionCalls && functionCalls.length > 0) {
-                        console.log(`[Gemini AI] Turn ${currentTurn}: Executing ${functionCalls.length} tool call(s) with ${modelName}...`);
+                        console.log(`[Gemini AI] Turn ${currentTurn}: Executing ${functionCalls.length} tool call(s)...`);
                         const functionResponses: any[] = [];
 
                         for (const fc of functionCalls) {
@@ -1147,20 +1144,24 @@ async function callAI(userId: string, userMessage: string, isAdmin: boolean, rea
                     safeSaveJSON('db_history.json', chatHistories);
                     return textReply;
                 }
-            } catch (geminiError: any) {
-                // Check if quota / auth / rate limit error -> rotate key silently
-                const errMsg = geminiError?.message || JSON.stringify(geminiError);
-                if (errMsg.includes('429') || errMsg.includes('403') || errMsg.includes('401') || errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('API_KEY_INVALID')) {
-                    rotateGeminiKey();
-                    break; // break model loop and retry with next key
-                }
+                return null;
+            };
+
+            // Enforce a strict 5-second timeout on Gemini to keep responses instant
+            const timeoutPromise = new Promise<null>((_, reject) => 
+                setTimeout(() => reject(new Error('Gemini timeout')), 5000)
+            );
+
+            const result = await Promise.race([geminiCall(), timeoutPromise]);
+            if (result && typeof result === 'string' && result.trim()) {
+                return result;
             }
+        } catch (geminiError: any) {
+            console.warn("[Gemini AI Bypass -> Groq]:", geminiError?.message || geminiError);
         }
-        // If not succeeded with this key's models, rotate to next key
-        rotateGeminiKey();
     }
 
-    // 2. Secondary fallback if all Gemini models encounter temporary rate-limit
+    // 2. Primary Fast Engine: Groq Llama-3.3 70B & 8B (Sub-second response time)
     try {
         return await callGroqFallback(userId, userMessage, isAdmin, systemPrompt);
     } catch (groqErr) {
@@ -1666,8 +1667,8 @@ async function startServer() {
     const scheduleReconnect = (delayMs = 4000) => {
         if (reconnectTimer) clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
-            if (!whatsappClient && !isWhatsappConnected && (hasSavedSession || fs.existsSync(path.join(process.cwd(), '.wwebjs_auth', 'session-client-one')))) {
-                console.log("[WhatsApp Auto-Reconnect] Restoring permanent session in background...");
+            if (!whatsappClient && !isStartingWhatsApp && !isWhatsappConnected) {
+                console.log("[WhatsApp Auto-Reconnect] Restoring permanent session / generating QR in background...");
                 startWhatsappClient().catch(e => console.error("[WhatsApp Auto-Reconnect] Error:", e));
             }
         }, delayMs);
@@ -1698,6 +1699,7 @@ async function startServer() {
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
                     headless: true,
+                    protocolTimeout: 0,
                     args: [
                         '--no-sandbox', 
                         '--disable-setuid-sandbox',
@@ -1708,10 +1710,17 @@ async function startServer() {
                         '--disable-gpu',
                         '--disable-background-timer-throttling',
                         '--disable-backgrounding-occluded-windows',
-                        '--disable-renderer-backgrounding'
+                        '--disable-renderer-backgrounding',
+                        '--disable-extensions',
+                        '--disable-features=site-per-process,AudioServiceOutOfProcess',
+                        '--window-size=1280,800'
                     ],
-                    timeout: 60000
-                }
+                    timeout: 120000
+                },
+                authTimeoutMs: 120000,
+                qrMaxRetries: 10,
+                takeoverOnConflict: true,
+                takeoverTimeoutMs: 10000
             });
 
             whatsappClient.on('qr', async (qr: string) => {
@@ -2038,11 +2047,17 @@ async function startServer() {
 
             whatsappClient.initialize().then(() => {
                 isStartingWhatsApp = false;
+                console.log("[WhatsApp] Client initialization completed successfully.");
             }).catch(err => {
                 console.error("WhatsApp Initialization Error:", err);
                 isStartingWhatsApp = false;
-                whatsappClient = null;
+                if (whatsappClient) {
+                    try { whatsappClient.destroy(); } catch {}
+                    whatsappClient = null;
+                }
+                cleanAllChromiumLocks();
                 io.emit('whatsapp-status', { connected: false, qr: null, hasSavedSession, isReady: false, error: err.message });
+                scheduleReconnect(5000);
             });
             return { success: true };
         } catch (e: any) {
@@ -3406,9 +3421,17 @@ async function startServer() {
     });
 
     app.post('/api/chat', async (req, res) => {
-         const { message } = req.body;
-         const reply = await callGroqLLM('dashboard_user', message, true);
-         res.json({ reply });
+         try {
+             const { message } = req.body;
+             if (!message || !String(message).trim()) {
+                 return res.json({ reply: 'أهلاً بك! كيف يمكنني مساعدتك في مشروعك البرمجي اليوم؟' });
+             }
+             const reply = await callGroqLLM('dashboard_user', String(message), true);
+             res.json({ reply });
+         } catch (chatErr: any) {
+             console.error("[POST /api/chat error]:", chatErr?.message || chatErr);
+             res.json({ reply: 'أهلاً بك في شركة Texora للبرمجيات! تم استلام رسالتك، كيف يمكننا مساعدتك في تفاصيل طلبك؟' });
+         }
     });
 
     if (process.env.NODE_ENV !== "production") {

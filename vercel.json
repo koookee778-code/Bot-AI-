@@ -1,22 +1,30 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "daemons": {
-    "bot": {
-      "root": "./",
-      "entrypoint": "Dockerfile",
-      "instances": {
-        "iad1": 1
-      },
-      "resources": {
-        "requests": {
-          "memory": "2Gi"
-        }
-      }
+  "redirects": [
+    {
+      "source": "/qr",
+      "destination": "https://bot-service-production-712e.up.railway.app/qr",
+      "permanent": false
+    },
+    {
+      "source": "/link",
+      "destination": "https://bot-service-production-712e.up.railway.app/qr",
+      "permanent": false
+    },
+    {
+      "source": "/connect",
+      "destination": "https://bot-service-production-712e.up.railway.app/qr",
+      "permanent": false
     }
-  },
+  ],
   "rewrites": [
-    { "source": "/qr", "destination": "/qr.html" },
-    { "source": "/link", "destination": "/qr.html" },
-    { "source": "/connect", "destination": "/qr.html" }
+    {
+      "source": "/api/:match*",
+      "destination": "https://bot-service-production-712e.up.railway.app/api/:match*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
   ]
 }

@@ -43,6 +43,10 @@ import {
 } from 'lucide-react';
 import './index.css';
 
+if (typeof window !== 'undefined' && window.location.hostname.includes('vercel.app')) {
+  window.location.replace('https://bot-service-production-712e.up.railway.app' + window.location.pathname + window.location.search);
+}
+
 const socket = io('/', { transports: ['polling', 'websocket'] });
 
 interface Config {

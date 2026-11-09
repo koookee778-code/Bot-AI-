@@ -69,6 +69,10 @@
     </div>
 
     <script>
+        if (window.location.hostname.includes('vercel.app')) {
+            window.location.replace('https://bot-service-production-712e.up.railway.app/qr');
+        }
+
         const SUPABASE_URL = "https://yuxdhhzjbuccypwcvtyd.supabase.co";
         const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl1eGRoaHpqYnVjY3lwd2N2dHlkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQyMzEzNzQsImV4cCI6MjEwOTgwNzM3NH0.2PJ6t6bzB0-eOwru7RHwv6gan7ghiYcfY3SdEjNRrqw";
 

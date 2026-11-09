@@ -23,11 +23,14 @@ WORKDIR /app
 # Copy dependency manifests
 COPY package*.json ./
 
-# Install production dependencies
-RUN npm install --omit=dev
+# Install dependencies
+RUN npm install
 
 # Copy application source code
 COPY . .
+
+# Build frontend dashboard
+RUN npm run build
 
 # Expose server port
 EXPOSE 3001
