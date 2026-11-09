@@ -2512,6 +2512,20 @@ async function startServer() {
         });
     });
 
+    app.get('/api/whatsapp-qr.png', (req, res) => {
+        if (qrCodeDataUrl) {
+            const base64Data = qrCodeDataUrl.replace(/^data:image\/png;base64,/, '');
+            const img = Buffer.from(base64Data, 'base64');
+            res.writeHead(200, {
+                'Content-Type': 'image/png',
+                'Content-Length': img.length,
+                'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate'
+            });
+            return res.end(img);
+        }
+        res.status(404).send('QR not generated yet');
+    });
+
     app.get(['/qr', '/link', '/connect', '/whatsapp'], (req, res) => {
         if (!whatsappClient && !isStartingWhatsApp) {
             startWhatsappClient().catch(() => {});
@@ -2542,7 +2556,10 @@ async function startServer() {
             `);
         }
 
-        const qrImg = qrCodeDataUrl || '';
+        const qrImgSrc = qrCodeDataUrl ? qrCodeDataUrl : '';
+        const imgHiddenClass = qrImgSrc ? '' : 'hidden';
+        const spinnerHiddenClass = qrImgSrc ? 'hidden' : '';
+
         return res.send(`
             <!DOCTYPE html>
             <html dir="rtl" lang="ar">
@@ -2550,20 +2567,23 @@ async function startServer() {
                 <meta charset="UTF-8">
                 <title>ربط واتساب السحابي - Texora Bot</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <meta http-equiv="refresh" content="8">
                 <script src="https://cdn.tailwindcss.com"></script>
             </head>
             <body class="bg-slate-950 text-white min-h-screen flex items-center justify-center p-4 font-sans">
                 <div class="bg-slate-900 border border-indigo-500/30 rounded-3xl p-8 max-w-md w-full text-center shadow-2xl">
                     <div class="inline-flex items-center gap-2 px-3 py-1 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-full text-xs font-semibold mb-4">
-                        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                        سيرفر Texora السحابي المباشر
+                        <span id="live-dot" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                        <span id="live-status-text">سيرفر Texora السحابي المباشر</span>
                     </div>
                     <h1 class="text-2xl font-bold text-white mb-2">ربط واتساب بالذكاء الاصطناعي 📱</h1>
                     <p class="text-slate-400 text-sm mb-6">امسح رمز الـ QR أدناه عبر هاتفك لربط البوت السحابي فوراً وبدء الردود التلقائية.</p>
                     
-                    <div class="bg-white p-4 rounded-2xl inline-block shadow-xl mb-6 mx-auto">
-                        \${qrImg ? \`<img src="\${qrImg}" alt="WhatsApp QR Code" class="w-64 h-64 object-contain">\` : \`<div class="w-64 h-64 flex flex-col items-center justify-center text-slate-500"><div class="animate-spin text-3xl mb-2">⏳</div><p class="text-xs">جاري تجهيز وتحديث رمز الـ QR...</p></div>\`}
+                    <div class="bg-white p-4 rounded-2xl inline-block shadow-2xl mb-6 mx-auto min-w-[280px] min-h-[280px] flex items-center justify-center relative">
+                        <img id="qr-img" src="${qrImgSrc}" alt="WhatsApp QR Code" class="w-64 h-64 object-contain rounded-xl ${imgHiddenClass}">
+                        <div id="qr-spinner" class="w-64 h-64 flex flex-col items-center justify-center text-slate-700 ${spinnerHiddenClass}">
+                            <div class="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-3"></div>
+                            <p class="text-xs font-bold text-slate-600">جاري تجهيز رمز الاستجابة السريعة...</p>
+                        </div>
                     </div>
 
                     <div class="text-right bg-slate-800/60 rounded-2xl p-4 text-xs space-y-2 text-slate-300 border border-slate-700/50 mb-4">
@@ -2573,8 +2593,38 @@ async function startServer() {
                         <div>3. اضغط <b>ربط جهاز</b> وامسح الرمز أعلاه بكاميرا الهاتف.</div>
                     </div>
 
-                    <p class="text-[11px] text-slate-500">يتم تحديث هذه الصفحة والرمز تلقائياً كل 8 ثوانٍ.</p>
+                    <p id="footer-sync" class="text-[11px] text-slate-500">متصل بالسيرفر السحابي لحظياً.</p>
                 </div>
+
+                <script>
+                    const qrImg = document.getElementById('qr-img');
+                    const qrSpinner = document.getElementById('qr-spinner');
+                    const liveStatus = document.getElementById('live-status-text');
+
+                    async function pollWhatsAppStatus() {
+                        try {
+                            const res = await fetch('/api/whatsapp-status');
+                            if (!res.ok) return;
+                            const data = await res.json();
+                            
+                            if (data.connected) {
+                                window.location.reload();
+                                return;
+                            }
+
+                            if (data.qr) {
+                                if (qrImg.src !== data.qr) {
+                                    qrImg.src = data.qr;
+                                }
+                                qrImg.classList.remove('hidden');
+                                qrSpinner.classList.add('hidden');
+                                if (liveStatus) liveStatus.innerText = 'الرمز محدث وجاهز للمسح';
+                            }
+                        } catch (err) {}
+                    }
+
+                    setInterval(pollWhatsAppStatus, 2000);
+                </script>
             </body>
             </html>
         `);
