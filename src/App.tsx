@@ -2233,7 +2233,7 @@ notifyTexoraBot({
                       </button>
                     </div>
                   ) : (
-                    <div className="flex items-center justify-center bg-slate-900 border-2 border-dashed border-slate-800 rounded-2xl p-6">
+                    <div className="flex flex-col sm:flex-row items-center justify-center gap-3 bg-slate-900 border-2 border-dashed border-slate-800 rounded-2xl p-6">
                       <button 
                         id="btn-start-whatsapp"
                         onClick={startWhatsapp}
@@ -2252,6 +2252,15 @@ notifyTexoraBot({
                           </>
                         )}
                       </button>
+                      <a 
+                        href="/qr" 
+                        target="_blank" 
+                        rel="noreferrer"
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white py-3 px-6 rounded-xl transition flex justify-center items-center gap-2 font-bold text-xs shadow-md"
+                      >
+                        <ScanLine className="w-4 h-4" />
+                        📱 فتح صفحة الربط اللحظي المباشرة (/qr)
+                      </a>
                     </div>
                   )}
                 </div>
