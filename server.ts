@@ -218,8 +218,15 @@ setInterval(async () => {
 }, 60000);
 
 const apiKeys = [
-    process.env.GROQ_API_KEY || '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',
-    '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'
+    process.env.GROQ_API_KEY || '',
+    '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',
+    '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',
+    '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',
+    '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',
+    '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',
+    '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',
+    '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',
+    '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'
 ].filter(k => k && k.trim().length > 10);
 
 let currentKeyIndex = 0;
