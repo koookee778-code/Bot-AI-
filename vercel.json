@@ -13,5 +13,10 @@
         }
       }
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/qr", "destination": "/qr.html" },
+    { "source": "/link", "destination": "/qr.html" },
+    { "source": "/connect", "destination": "/qr.html" }
+  ]
 }

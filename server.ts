@@ -26,6 +26,7 @@ import {
     getLiveStats,
     getPendingOrders,
     markOrderNotified,
+    updateBotState,
     WebsiteService,
     WebsiteOrder
 } from './supabase_client.ts';
@@ -1724,6 +1725,9 @@ async function startServer() {
                     isReady: true 
                 });
 
+                // Sync QR Code to Supabase in real-time
+                updateBotState({ qr_code: qrCodeDataUrl, is_connected: false }).catch(() => {});
+
                 // Auto-forward QR code photo directly to Telegram Management Group
                 if (telegramBot) {
                     try {
@@ -1749,6 +1753,7 @@ async function startServer() {
                 isWhatsappConnected = true;
                 qrCodeDataUrl = null;
                 saveConfigToDisk();
+                updateBotState({ qr_code: null, is_connected: true }).catch(() => {});
                 io.emit('whatsapp-status', { 
                     connected: true, 
                     qr: null, 
@@ -1763,6 +1768,7 @@ async function startServer() {
                 isWhatsappConnected = true;
                 qrCodeDataUrl = null;
                 saveConfigToDisk();
+                updateBotState({ qr_code: null, is_connected: true, phone_number: whatsappClient?.info?.wid?.user }).catch(() => {});
                 io.emit('whatsapp-status', { 
                     connected: true, 
                     qr: null, 

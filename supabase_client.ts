@@ -222,3 +222,24 @@ export async function markOrderNotified(
         console.error('[Supabase markOrderNotified Error]:', err?.message || err);
     }
 }
+
+/**
+ * Updates bot state (QR code, connection status) in Supabase for cloud sync
+ */
+export async function updateBotState(state: {
+    qr_code?: string | null;
+    is_connected?: boolean;
+    phone_number?: string;
+}): Promise<void> {
+    try {
+        await supabase
+            .from('bot_state')
+            .upsert({
+                id: 'default',
+                ...state,
+                updated_at: new Date().toISOString()
+            });
+    } catch (err: any) {
+        console.error('[Supabase updateBotState Error]:', err?.message || err);
+    }
+}
