@@ -1970,7 +1970,10 @@ async function startServer() {
                         if (msg.fromMe) return; // Don't reply to outgoing voice notes
                         console.log(`[WhatsApp Voice] Processing incoming audio message from ${fromStr}...`);
                         try {
-                            const media = await msg.downloadMedia();
+                            const media: any = await Promise.race([
+                                msg.downloadMedia(),
+                                new Promise((_, reject) => setTimeout(() => reject(new Error('downloadMedia timeout (20s)')), 20000))
+                            ]);
                             if (media && media.data) {
                                 const audioBuffer = Buffer.from(media.data, 'base64');
                                 const transcribed = await transcribeAudio(audioBuffer, media.mimetype || 'audio/ogg');
@@ -1981,6 +1984,10 @@ async function startServer() {
                                     await msg.reply("عذراً، لم أتمكن من سماع الصوت بوضوح، برجاء إعادة إرسال التسجيل أو كتابته لنبدأ فوراً 🎙️🙏\u200B");
                                     return;
                                 }
+                            } else {
+                                console.warn(`[WhatsApp Voice] media.data was empty for voice from ${fromStr}`);
+                                await msg.reply("عذراً، تعذر تحميل الرسالة الصوتية، برجاء إعادة إرسالها أو كتابتها لنخدمك فوراً 💬\u200B");
+                                return;
                             }
                         } catch (sttErr: any) {
                             console.error("[WhatsApp STT Error]:", sttErr?.message || sttErr);
