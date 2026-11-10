@@ -1957,19 +1957,30 @@ async function startServer() {
                     if (isVoiceOrAudio) {
                         if (msg.fromMe) return; // Don't reply to outgoing voice notes
                         console.log(`[WhatsApp Voice] Incoming voice note from ${fromStr}`);
-                        try {
-                            const media = await msg.downloadMedia();
-                            if (media && media.data) {
+                        let media: any = null;
+                        for (let attempt = 1; attempt <= 3; attempt++) {
+                            try {
+                                media = await msg.downloadMedia();
+                                if (media && media.data) break;
+                            } catch (dErr: any) {
+                                console.warn(`[WhatsApp Voice Download Attempt ${attempt}]:`, dErr?.message || dErr);
+                            }
+                            if (attempt < 3) await new Promise(r => setTimeout(r, 800));
+                        }
+
+                        if (media && media.data) {
+                            try {
                                 const audioBuffer = Buffer.from(media.data, 'base64');
                                 const transcribed = await transcribeAudio(audioBuffer, media.mimetype || 'audio/ogg');
                                 if (transcribed && transcribed.trim()) {
                                     activeUserMessage = transcribed.trim();
                                     console.log(`[WhatsApp Voice Transcribed]: "${activeUserMessage}"`);
                                 }
+                            } catch (err: any) {
+                                console.warn("[WhatsApp Voice STT Warning]:", err?.message || err);
                             }
-                        } catch (err: any) {
-                            console.warn("[WhatsApp Voice STT Warning]:", err?.message || err);
                         }
+
                         if (!activeUserMessage.trim()) {
                             await msg.reply("عذراً، لم أتمكن من سماع الصوت بوضوح، يرجى كتابة استفسارك أو إعادة إرساله 🎙️🙏\u200B").catch(() => {});
                             return;
@@ -2109,12 +2120,20 @@ async function startServer() {
                                 console.log(`[WhatsApp Voice] Generating Lulwa voice reply for ${conversationId}...`);
                                 const { oggBuffer } = await generateVoiceAudio(reply, 'lulwa');
                                 const voiceMedia = new MessageMedia('audio/ogg; codecs=opus', oggBuffer.toString('base64'), 'voice.ogg');
-                                if (typeof msg.reply === 'function') {
-                                    await msg.reply(voiceMedia, undefined, { sendAudioAsVoice: true });
-                                } else {
+                                
+                                let voiceSent = false;
+                                try {
                                     await whatsappClient.sendMessage(conversationId, voiceMedia, { sendAudioAsVoice: true });
+                                    voiceSent = true;
+                                    console.log(`[WhatsApp Voice] Sent voice reply successfully to ${conversationId}!`);
+                                } catch (vSendErr: any) {
+                                    console.warn("[WhatsApp Voice] Direct send failed, trying fromStr fallback:", vSendErr?.message || vSendErr);
+                                    if (fromStr && fromStr !== conversationId) {
+                                        await whatsappClient.sendMessage(fromStr, voiceMedia, { sendAudioAsVoice: true });
+                                        voiceSent = true;
+                                        console.log(`[WhatsApp Voice] Sent voice reply successfully via fallback to ${fromStr}!`);
+                                    }
                                 }
-                                console.log(`[WhatsApp Voice] Sent voice reply successfully!`);
                             } catch (vErr: any) {
                                 console.warn("[WhatsApp Voice Send Warning]:", vErr?.message || vErr);
                             }
@@ -2710,6 +2729,21 @@ async function startServer() {
         if (!whatsappClient && !isStartingWhatsApp) {
             startWhatsappClient().catch(() => {});
         }
+
+        // Auto-dismiss "What's New in WhatsApp Web" / "الجديد في واتساب ويب" popup if blocking the screen
+        if (!isWhatsappConnected && whatsappClient?.pupPage) {
+            whatsappClient.pupPage.evaluate(() => {
+                const btn = Array.from(document.querySelectorAll('button, div[role="button"]')).find((b: any) => 
+                    b.innerText?.includes('متابعة') || 
+                    b.innerText?.includes('Continue') || 
+                    b.getAttribute('aria-label')?.includes('Close') ||
+                    b.getAttribute('aria-label')?.includes('إغلاق') ||
+                    b.querySelector('[data-icon="x"]')
+                );
+                if (btn) (btn as any).click();
+            }).catch(() => {});
+        }
+
         const ageSec = lastQrTimestamp > 0 ? Math.round((now - lastQrTimestamp) / 1000) : 999;
         res.json({ 
             connected: isWhatsappConnected, 
@@ -2721,6 +2755,47 @@ async function startServer() {
             ageSeconds: ageSec,
             expiresInSec: Math.max(0, 20 - ageSec)
         });
+    });
+
+    app.get('/api/debug/wa-click-modal', async (req, res) => {
+        try {
+            if (!whatsappClient?.pupPage) return res.status(500).send("No pupPage available");
+            const result = await whatsappClient.pupPage.evaluate(() => {
+                const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                const btn = buttons.find((b: any) => 
+                    b.innerText?.includes('متابعة') || 
+                    b.innerText?.includes('Continue') || 
+                    b.getAttribute('aria-label')?.includes('Close') ||
+                    b.getAttribute('aria-label')?.includes('إغلاق') ||
+                    b.querySelector('[data-icon="x"]')
+                );
+                if (btn) {
+                    (btn as any).click();
+                    return "Clicked button: " + ((btn as any).innerText || "close");
+                }
+                return "No modal button found";
+            });
+            return res.send(result);
+        } catch (e: any) {
+            return res.status(500).send(e.message);
+        }
+    });
+
+    app.get('/api/debug/wa-screenshot', async (req, res) => {
+        try {
+            if (!whatsappClient?.pupPage) {
+                return res.status(500).send("No pupPage available");
+            }
+            const screenshot = await whatsappClient.pupPage.screenshot();
+            res.writeHead(200, {
+                'Content-Type': 'image/png',
+                'Content-Length': screenshot.length,
+                'Cache-Control': 'no-store'
+            });
+            return res.end(screenshot);
+        } catch (e: any) {
+            return res.status(500).send(e.message);
+        }
     });
 
     app.get(['/api/whatsapp-qr.png', '/api/qr.png'], (req, res) => {
