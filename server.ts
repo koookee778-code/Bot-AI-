@@ -2007,13 +2007,17 @@ async function startServer() {
             if (isRestartingWhatsApp) return;
             console.error("[WhatsApp Page Crash Detected!]:", err?.message || err);
             isWhatsappConnected = false;
-            restartWhatsappClient(false).catch(() => {});
+            setTimeout(() => {
+                restartWhatsappClient(false).catch(() => {});
+            }, 3000);
         });
         page.on('close', () => {
             if (isRestartingWhatsApp || !isWhatsappConnected) return;
             console.warn("[WhatsApp Page Closed unexpectedly!]");
             isWhatsappConnected = false;
-            restartWhatsappClient(false).catch(() => {});
+            setTimeout(() => {
+                restartWhatsappClient(false).catch(() => {});
+            }, 3000);
         });
     };
 
@@ -2024,7 +2028,9 @@ async function startServer() {
             if (isRestartingWhatsApp || !isWhatsappConnected) return;
             console.warn("[WhatsApp PupBrowser Disconnected unexpectedly!]");
             isWhatsappConnected = false;
-            restartWhatsappClient(false).catch(() => {});
+            setTimeout(() => {
+                restartWhatsappClient(false).catch(() => {});
+            }, 3000);
         });
     };
 
@@ -2059,11 +2065,6 @@ async function startServer() {
                     clientId: "client-one",
                     dataPath: authPath
                 }),
-                webVersionCache: {
-                    type: 'remote',
-                    remotePath: 'https://raw.githubusercontent.com/wwebjs/webVersionCache/master/html/{version}.html',
-                    strict: false
-                },
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
                     headless: process.env.HEADLESS === 'true' ? true : (process.platform === 'win32' ? false : true),
@@ -2074,23 +2075,11 @@ async function startServer() {
                         '--disable-dev-shm-usage',
                         '--disable-accelerated-2d-canvas',
                         '--no-first-run',
+                        '--no-zygote',
                         '--disable-gpu',
-                        '--js-flags=--max-old-space-size=512',
-                        '--disable-extensions',
-                        '--disable-component-extensions-with-background-pages',
-                        '--disable-default-apps',
-                        '--mute-audio',
-                        '--no-default-browser-check',
                         '--disable-background-timer-throttling',
                         '--disable-backgrounding-occluded-windows',
-                        '--disable-renderer-backgrounding',
-                        '--disable-features=Translate,BackForwardCache,AcceptCHFrame,AvoidUnnecessaryBeforeUnloadCheckSync,IsolateOrigins,site-per-process',
-                        '--disk-cache-size=10485760',
-                        '--media-cache-size=10485760',
-                        '--disable-client-side-phishing-detection',
-                        '--disable-sync',
-                        '--disable-breakpad',
-                        '--disable-component-update'
+                        '--disable-renderer-backgrounding'
                     ],
                     timeout: 60000
                 }
