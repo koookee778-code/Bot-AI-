@@ -2255,7 +2255,7 @@ async function startServer() {
                 isStartingWhatsApp = false;
                 console.log("[WhatsApp] Client initialization completed successfully.");
                 
-                // Auto-dismiss any blocking WhatsApp Web dialogs (e.g. "What's new" / "متابعة")
+                // Auto-dismiss any blocking WhatsApp Web dialogs & auto-detect chat pane
                 setInterval(async () => {
                     try {
                         const pup = (whatsappClient as any)?.pupPage;
@@ -2270,9 +2270,21 @@ async function startServer() {
                                     (continueBtn as HTMLElement).click();
                                 }
                             });
+
+                            if (!isWhatsappConnected) {
+                                const chatsLoaded = await pup.evaluate(() => {
+                                    return !!document.querySelector('#pane-side, div[role="row"], div[data-tab="3"]');
+                                });
+                                if (chatsLoaded) {
+                                    console.log("[WhatsApp] Chats pane detected on page. Marking WhatsApp as CONNECTED & READY!");
+                                    isWhatsappConnected = true;
+                                    hasSavedSession = true;
+                                    io.emit('whatsapp-status', { connected: true, qr: null, hasSavedSession: true, isReady: true });
+                                }
+                            }
                         }
                     } catch {}
-                }, 4000);
+                }, 3000);
             }).catch(err => {
                 if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
                 console.error("WhatsApp Initialization Error:", err);
