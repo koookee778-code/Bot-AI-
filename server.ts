@@ -1649,7 +1649,7 @@ async function startServer() {
                         });
 
                         // Autonomous Voice Note Reply on Telegram (Lulwa Voice via Groq)
-                        const shouldSendTgVoice = msgObj?.voice || msgObj?.audio || process.env.ENABLE_VOICE_REPLIES === 'true';
+                        const shouldSendTgVoice = !!(msgObj?.voice || msgObj?.audio || /رد.*صوت|ابعت.*فويس|اتكلم.*صوت|عايز.*صوت|سجل.*صوت|رد.*تسجيل|فويس|ريكورد/i.test(cleanText || text || ''));
                         if (shouldSendTgVoice) {
                             try {
                                 console.log(`[Telegram Voice TTS] Generating Lulwa voice reply for ${chatId}...`);
@@ -1961,11 +1961,46 @@ async function startServer() {
                         for (let attempt = 1; attempt <= 3; attempt++) {
                             try {
                                 media = await msg.downloadMedia();
-                                if (media && media.data) break;
+                                if (media && media.data) {
+                                    console.log(`[WhatsApp Voice] Successfully downloaded media on attempt ${attempt}`);
+                                    break;
+                                }
                             } catch (dErr: any) {
                                 console.warn(`[WhatsApp Voice Download Attempt ${attempt}]:`, dErr?.message || dErr);
                             }
                             if (attempt < 3) await new Promise(r => setTimeout(r, 800));
+                        }
+
+                        // DOM fallback in server.ts if downloadMedia returned empty
+                        if (!media || !media.data) {
+                            try {
+                                if (whatsappClient?.pupPage) {
+                                    const domAudio = await whatsappClient.pupPage.evaluate(async () => {
+                                        const audios = Array.from(document.querySelectorAll('audio'));
+                                        for (let i = audios.length - 1; i >= 0; i--) {
+                                            const src = audios[i].src;
+                                            if (src && src.startsWith('blob:')) {
+                                                try {
+                                                    const res = await fetch(src);
+                                                    const blob = await res.blob();
+                                                    const buf = await blob.arrayBuffer();
+                                                    if (buf && buf.byteLength > 50) {
+                                                        const data = await (window as any).WWebJS.arrayBufferToBase64Async(buf);
+                                                        return { data, mimetype: 'audio/ogg' };
+                                                    }
+                                                } catch {}
+                                            }
+                                        }
+                                        return null;
+                                    });
+                                    if (domAudio && domAudio.data) {
+                                        media = domAudio;
+                                        console.log("[WhatsApp Voice] Captured voice note audio directly from DOM audio player!");
+                                    }
+                                }
+                            } catch (domErr: any) {
+                                console.warn("[WhatsApp Voice DOM extraction Warning]:", domErr?.message || domErr);
+                            }
                         }
 
                         if (media && media.data) {
@@ -2082,8 +2117,8 @@ async function startServer() {
                     const reply = await callGroqLLM(sessionKey, activeUserMessage, isFromAdmin, realPhoneNumber || chatUser);
 
                     if (reply && whatsappClient) {
-                        const userRequestedVoice = isVoiceOrAudio || /رد.*صوت|ابعت.*فويس|اتكلم.*صوت|عايز.*صوت|سجل.*صوت|رد.*تسجيل/i.test(activeUserMessage);
-                        const shouldSendVoice = userRequestedVoice || process.env.ENABLE_VOICE_REPLIES === 'true';
+                        const userRequestedVoice = isVoiceOrAudio || /رد.*صوت|ابعت.*فويس|اتكلم.*صوت|عايز.*صوت|سجل.*صوت|رد.*تسجيل|فويس|ريكورد/i.test(activeUserMessage);
+                        const shouldSendVoice = userRequestedVoice;
 
                         if (shouldSendVoice) {
                             // Voice-only reply requested: Send Lulwa voice note directly without any text message
