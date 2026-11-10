@@ -2176,8 +2176,15 @@ async function startServer() {
                     console.log("[WhatsApp] User logged out from mobile device. Clearing permanent session.");
                     hasSavedSession = false;
                     saveConfigToDisk();
-                    const authPath = path.join(process.cwd(), '.wwebjs_auth');
-                    try { fs.rmSync(authPath, { recursive: true, force: true }); } catch {}
+                    const authPath = path.resolve(__dirname, '.wwebjs_auth');
+                    try {
+                        if (fs.existsSync(authPath)) {
+                            const entries = fs.readdirSync(authPath);
+                            for (const entry of entries) {
+                                try { fs.rmSync(path.join(authPath, entry), { recursive: true, force: true }); } catch {}
+                            }
+                        }
+                    } catch {}
                     cleanAllChromiumLocks();
                     scheduleReconnect(3000);
                 } else {
@@ -2981,11 +2988,23 @@ ${noticeBody}
             await new Promise(r => setTimeout(r, 2000));
 
             if (cleanAuth) {
-                const authPath = path.join(process.cwd(), '.wwebjs_auth');
+                const authPath = path.resolve(__dirname, '.wwebjs_auth');
                 try {
-                    fs.rmSync(authPath, { recursive: true, force: true });
-                    console.log("[WhatsApp] Wiped stale .wwebjs_auth directory.");
-                } catch (e) {}
+                    if (fs.existsSync(authPath)) {
+                        const entries = fs.readdirSync(authPath);
+                        for (const entry of entries) {
+                            try {
+                                fs.rmSync(path.join(authPath, entry), { recursive: true, force: true });
+                                console.log(`[WhatsApp Cleanup] Removed: ${entry}`);
+                            } catch (rmErr: any) {
+                                console.warn(`[WhatsApp Cleanup] Could not remove ${entry}:`, rmErr?.message);
+                            }
+                        }
+                    }
+                    console.log("[WhatsApp] Completely wiped all contents of .wwebjs_auth volume.");
+                } catch (e: any) {
+                    console.warn("[WhatsApp Cleanup Error]:", e?.message);
+                }
                 hasSavedSession = false;
                 saveConfigToDisk();
                 await new Promise(r => setTimeout(r, 1000));
