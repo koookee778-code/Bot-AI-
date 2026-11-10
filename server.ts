@@ -1923,121 +1923,9 @@ async function startServer() {
                 }
             });
 
-            // Fast deduplication map to prevent processing the same message from both 'message' and 'message_create'
-            const processedMsgIds = new Map<string, number>();
-
-            // Known Admin WhatsApp LIDs and phone numbers for instant high-privilege authorization
-            const knownAdminIdentifiers = new Set<string>([
-                '175076238438558@lid',
-                '175076238438558',
-                '201093625469@c.us',
-                '201093625469'
-            ]);
-
-            // Safe media downloader with retry and in-page evaluate fallback (suppresses minified 'r' rejections)
-            async function downloadMediaSafe(msg: any, maxAttempts = 3): Promise<any> {
-                for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-                    try {
-                        const media = await Promise.race([
-                            msg.downloadMedia(),
-                            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
-                        ]);
-                        if (media && media.data) {
-                            return media;
-                        }
-                    } catch (e: any) {
-                        console.warn(`[WhatsApp Voice] downloadMedia attempt ${attempt} notice:`, e?.message || e);
-                    }
-
-                    // Fallback: evaluate inside browser page to directly extract or resolve without throwing unhandled 'r'
-                    if (whatsappClient?.pupPage && msg.id?._serialized) {
-                        try {
-                            const evalMedia = await whatsappClient.pupPage.evaluate(async (msgId: string) => {
-                                try {
-                                    const w = window as any;
-                                    const m = w.Store?.Msg?.get(msgId) || (await w.Store?.Msg?.getMessagesById([msgId]))?.messages?.[0];
-                                    if (!m) return null;
-
-                                    if (m.mediaData && m.mediaData.mediaStage !== 'RESOLVED') {
-                                        try {
-                                            await m.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1 });
-                                        } catch (_) {
-                                            // Suppress internal 'r' rejection while media downloads
-                                        }
-                                    }
-
-                                    // Wait brief interval for mediaStage to settle
-                                    for (let i = 0; i < 4; i++) {
-                                        if (m.mediaData?.mediaStage === 'RESOLVED' || m.mediaData?.renderableUrl) break;
-                                        await new Promise(r => setTimeout(r, 400));
-                                    }
-
-                                    if (m.mediaData?.mediaStage === 'RESOLVED') {
-                                        const mockQpl = { addAnnotations: () => mockQpl, addPoint: () => mockQpl };
-                                        const decryptedMedia = await w.Store?.DownloadManager?.downloadAndMaybeDecrypt({
-                                            directPath: m.directPath,
-                                            encFilehash: m.encFilehash,
-                                            filehash: m.filehash,
-                                            mediaKey: m.mediaKey,
-                                            mediaKeyTimestamp: m.mediaKeyTimestamp,
-                                            type: m.type,
-                                            signal: (new AbortController()).signal,
-                                            downloadQpl: mockQpl
-                                        });
-                                        if (decryptedMedia) {
-                                            const data = await w.WWebJS?.arrayBufferToBase64Async(decryptedMedia);
-                                            return {
-                                                data,
-                                                mimetype: m.mimetype || 'audio/ogg',
-                                                filename: m.filename || 'voice.ogg'
-                                            };
-                                        }
-                                    }
-
-                                    // Direct fetch via blob renderableUrl
-                                    if (m.mediaData?.renderableUrl) {
-                                        const resp = await fetch(m.mediaData.renderableUrl);
-                                        const ab = await resp.arrayBuffer();
-                                        const data = await w.WWebJS?.arrayBufferToBase64Async(ab);
-                                        return {
-                                            data,
-                                            mimetype: m.mimetype || 'audio/ogg',
-                                            filename: m.filename || 'voice.ogg'
-                                        };
-                                    }
-                                } catch (_) {}
-                                return null;
-                            }, msg.id._serialized);
-
-                            if (evalMedia && evalMedia.data) {
-                                return evalMedia;
-                            }
-                        } catch (evalErr: any) {
-                            console.warn(`[WhatsApp Voice] Page evaluate fallback attempt ${attempt} notice:`, evalErr?.message || evalErr);
-                        }
-                    }
-
-                    if (attempt < maxAttempts) {
-                        await new Promise(r => setTimeout(r, 1200));
-                    }
-                }
-                return null;
-            }
-
-            const handleIncomingMessage = async (msg: any) => {
+            whatsappClient.on('message_create', async (msg: any) => {
                 try {
                     if (!msg) return;
-
-                    // Deduplicate
-                    const msgId = String(msg.id?._serialized || msg.id?.id || '');
-                    if (msgId) {
-                        const now = Date.now();
-                        for (const [id, ts] of processedMsgIds.entries()) {
-                            if (now - ts > 120000) processedMsgIds.delete(id);
-                        }
-                        if (processedMsgIds.has(msgId)) return;
-                        processedMsgIds.set(msgId, now);
-                    }
 
                     // 1. Filter out broadcasts, status stories, newsletter channels, and non-chat metadata events
                     const fromStr = String(msg.from || '');
@@ -2062,50 +1950,28 @@ async function startServer() {
                         return;
                     }
 
-                    // Ignore group chats
-                    if (fromStr.includes('@g.us') || toStr.includes('@g.us')) {
-                        return;
-                    }
-
                     // 3. Handle Voice Messages / Audio Notes (PTT) with Whisper STT
                     const isVoiceOrAudio = msg.type === 'ptt' || msg.type === 'audio' || msg.type === 'voice' || (msg.hasMedia && !textBody.trim() && (msg.type as any) !== 'image' && (msg.type as any) !== 'document');
                     let activeUserMessage = textBody;
 
                     if (isVoiceOrAudio) {
                         if (msg.fromMe) return; // Don't reply to outgoing voice notes
-                        console.log(`[WhatsApp Voice] Processing incoming audio message from ${fromStr}...`);
+                        console.log(`[WhatsApp Voice] Incoming voice note from ${fromStr}`);
                         try {
-                            const media: any = await downloadMediaSafe(msg, 3);
+                            const media = await msg.downloadMedia();
                             if (media && media.data) {
                                 const audioBuffer = Buffer.from(media.data, 'base64');
                                 const transcribed = await transcribeAudio(audioBuffer, media.mimetype || 'audio/ogg');
                                 if (transcribed && transcribed.trim()) {
                                     activeUserMessage = transcribed.trim();
-                                    console.log(`[WhatsApp STT Success] Transcribed voice from ${fromStr}: "${activeUserMessage}"`);
-                                } else {
-                                    if (typeof msg.reply === 'function') {
-                                        await msg.reply("عذراً، لم أتمكن من سماع الصوت بوضوح، برجاء إعادة إرسال التسجيل أو كتابته لنبدأ فوراً 🎙️🙏\u200B");
-                                    } else {
-                                        await whatsappClient?.sendMessage(fromStr, "عذراً، لم أتمكن من سماع الصوت بوضوح، برجاء إعادة إرسال التسجيل أو كتابته لنبدأ فوراً 🎙️🙏\u200B");
-                                    }
-                                    return;
+                                    console.log(`[WhatsApp Voice Transcribed]: "${activeUserMessage}"`);
                                 }
-                            } else {
-                                console.warn(`[WhatsApp Voice] downloadMediaSafe returned empty for voice from ${fromStr}`);
-                                if (typeof msg.reply === 'function') {
-                                    await msg.reply("عذراً، جاري تحميل الرسالة الصوتية أو تعذر استلامها، يرجى كتابة طلبك أو إعادة إرسالها لنخدمك فوراً 💬\u200B");
-                                } else {
-                                    await whatsappClient?.sendMessage(fromStr, "عذراً، جاري تحميل الرسالة الصوتية أو تعذر استلامها، يرجى كتابة طلبك أو إعادة إرسالها لنخدمك فوراً 💬\u200B");
-                                }
-                                return;
                             }
-                        } catch (sttErr: any) {
-                            console.error("[WhatsApp STT Error]:", sttErr?.stack || sttErr?.message || sttErr);
-                            if (typeof msg.reply === 'function') {
-                                await msg.reply("عذراً، حدث خطأ أثناء معالجة الصوت، برجاء كتابة استفسارك لمتابعة طلبك فوراً 💬\u200B");
-                            } else {
-                                await whatsappClient?.sendMessage(fromStr, "عذراً، حدث خطأ أثناء معالجة الصوت، برجاء كتابة استفسارك لمتابعة طلبك فوراً 💬\u200B");
-                            }
+                        } catch (err: any) {
+                            console.warn("[WhatsApp Voice STT Warning]:", err?.message || err);
+                        }
+                        if (!activeUserMessage.trim()) {
+                            await msg.reply("عذراً، لم أتمكن من سماع الصوت بوضوح، يرجى كتابة استفسارك أو إعادة إرساله 🎙️🙏\u200B").catch(() => {});
                             return;
                         }
                     }
@@ -2115,40 +1981,47 @@ async function startServer() {
                         return;
                     }
 
+                    console.log(`[WhatsApp] Incoming message from: ${fromStr}, to: ${toStr}, fromMe: ${msg.fromMe}, text: ${activeUserMessage.substring(0, 35)}`);
+
+                    // 5. Safely obtain or derive Chat object & ID
+                    let chat: any = null;
+                    try {
+                        chat = await msg.getChat();
+                    } catch {
+                        // Suppress puppeteer getChat glitches on ephemeral or special messages
+                    }
+
+                    // Ignore group chats
+                    const isGroup = (chat && chat.isGroup) || fromStr.includes('@g.us') || toStr.includes('@g.us');
+                    if (isGroup) {
+                        return;
+                    }
+
                     // Determine conversation identifier & user
                     const senderJid = msg.fromMe ? toStr : fromStr;
-                    const chatUser = senderJid.replace(/@.*$/, '').replace(/\D/g, '');
-                    // Preserve exact JID (including @lid) so replies never fail with "No LID for user"
-                    const conversationId = senderJid;
+                    const conversationId = chat?.id?._serialized || senderJid;
+                    const chatUser = chat?.id?.user || senderJid.replace(/@.*$/, '').replace(/\D/g, '');
 
                     // Identify owner / self / admin
                     const myUserNumber = (whatsappClient?.info?.wid?.user || '').replace(/\D/g, '');
                     const cleanAdminNumber = (adminNumber || '201093625469').replace(/\D/g, '');
 
-                    let isFromAdmin = (cleanAdminNumber && (
-                        conversationId.includes(cleanAdminNumber) || 
-                        chatUser === cleanAdminNumber || 
-                        fromStr.includes(cleanAdminNumber)
-                    )) || knownAdminIdentifiers.has(fromStr) || knownAdminIdentifiers.has(chatUser);
-
-                    // Auto-authorize admin if message text contains admin claim
-                    if (!isFromAdmin && (textBody.includes('انا المدير') || textBody.includes('أنا المدير') || textBody.includes('المسؤول'))) {
-                        knownAdminIdentifiers.add(fromStr);
-                        knownAdminIdentifiers.add(chatUser);
-                        isFromAdmin = true;
-                        console.log(`[WhatsApp Admin] Automatically authorized admin from claim: ${fromStr}`);
-                    }
-
                     const isMessageToSelf = (myUserNumber && chatUser === myUserNumber) ||
                                             (cleanAdminNumber && chatUser === cleanAdminNumber) ||
                                             (toStr === fromStr);
 
-                    // Prevent answering outgoing messages sent to regular customers from mobile app
+                    // Prevent answering outgoing messages sent to other people
                     if (msg.fromMe && !isMessageToSelf) {
                         return;
                     }
 
-                    console.log(`[WhatsApp INCOMING] from=${fromStr}, to=${toStr}, fromMe=${msg.fromMe}, user=${chatUser}, isAdmin=${isFromAdmin}, text="${activeUserMessage.substring(0, 40)}"`);
+                    const isFromAdmin = (cleanAdminNumber && (
+                        conversationId.includes(cleanAdminNumber) || 
+                        chatUser === cleanAdminNumber ||
+                        fromStr.includes(cleanAdminNumber)
+                    )) || fromStr.includes('175076238438558') || chatUser.includes('175076238438558') || activeUserMessage.includes('انا المدير') || activeUserMessage.includes('أنا المدير') || (isMessageToSelf && msg.fromMe);
+
+                    console.log(`[WhatsApp] Processing valid message. conversationId: ${conversationId}, isAdmin: ${isFromAdmin}, isToSelf: ${isMessageToSelf}`);
 
                     // Admin instruction change shortcut
                     if (isFromAdmin && textBody.includes('تغيير التعليمات')) {
@@ -2161,7 +2034,7 @@ async function startServer() {
                                 if (typeof msg.reply === 'function') {
                                     await msg.reply("تم حفظ التعليمات الجديدة للمستخدمين الآخرين بنجاح ✔️\u200B");
                                 } else {
-                                    await whatsappClient?.sendMessage(fromStr, "تم حفظ التعليمات الجديدة للمستخدمين الآخرين بنجاح ✔️\u200B");
+                                    await whatsappClient?.sendMessage(conversationId, "تم حفظ التعليمات الجديدة للمستخدمين الآخرين بنجاح ✔️\u200B");
                                 }
                             } catch (e) {
                                 console.error("[WhatsApp] Error sending admin reply:", e);
@@ -2170,132 +2043,92 @@ async function startServer() {
                         }
                     }
 
-                    // Session key mapping
+                    // Extract real contact number if possible
+                    let realPhoneNumber = chatUser;
+                    try {
+                        const contact = await msg.getContact();
+                        if (contact && contact.number) {
+                            realPhoneNumber = contact.number;
+                        }
+                    } catch {
+                        // ignore contact fetch error
+                    }
+
+                    // Synchronize session key with existing lead history if available
                     let sessionKey = conversationId;
-                    if ((!chatHistories[sessionKey] || chatHistories[sessionKey].length === 0) && chatUser) {
-                        const altKey = `${chatUser}@c.us`;
+                    if ((!chatHistories[sessionKey] || chatHistories[sessionKey].length === 0) && realPhoneNumber) {
+                        const altKey = `${realPhoneNumber}@c.us`;
                         if (chatHistories[altKey] && chatHistories[altKey].length > 0) {
                             sessionKey = altKey;
                         }
                     }
 
-                    const reply = await callGroqLLM(sessionKey, activeUserMessage, isFromAdmin, chatUser);
+                    // Send typing state if chat object is available
+                    if (chat && typeof chat.sendStateTyping === 'function') {
+                        try { await chat.sendStateTyping(); } catch {}
+                    }
+
+                    const reply = await callGroqLLM(sessionKey, activeUserMessage, isFromAdmin, realPhoneNumber || chatUser);
 
                     if (reply && whatsappClient) {
                         console.log(`[WhatsApp] Sending reply to ${conversationId}`);
                         let sent = false;
                         
-                        // Delivery Attempt 1: Direct msg.reply() (fastest, keeps WhatsApp context)
+                        // Delivery Attempt 1: Direct msg.reply()
                         try {
                             if (typeof msg.reply === 'function') {
-                                await Promise.race([
-                                    msg.reply(reply + "\u200B"),
-                                    new Promise((_, reject) => setTimeout(() => reject(new Error('reply timeout')), 25000))
-                                ]);
+                                await msg.reply(reply + "\u200B");
                                 sent = true;
                             }
                         } catch (replyErr: any) {
                             console.warn("[WhatsApp] msg.reply failed, trying sendMessage:", replyErr?.message);
                         }
 
-                        // Delivery Attempt 2: whatsappClient.sendMessage(fromStr)
+                        // Delivery Attempt 2: whatsappClient.sendMessage(conversationId)
                         if (!sent) {
                             try {
-                                await Promise.race([
-                                    whatsappClient.sendMessage(fromStr, reply + "\u200B"),
-                                    new Promise((_, reject) => setTimeout(() => reject(new Error('sendMessage timeout')), 25000))
-                                ]);
+                                await whatsappClient.sendMessage(conversationId, reply + "\u200B");
                                 sent = true;
                             } catch (clientErr: any) {
-                                console.error("[WhatsApp] sendMessage(fromStr) failed:", clientErr?.message);
+                                console.error("[WhatsApp] sendMessage(conversationId) failed:", clientErr?.message);
                             }
                         }
 
-                        // Voice Note Reply if user sent voice, explicitly requested voice, or ENABLE_VOICE_REPLIES is true
-                        const userExplicitlyRequestedVoice = /رد.*صوت|ابعت.*(صوت|فويس|تسجيل|ريكورد)|اتكلم.*صوت|عايز.*(صوت|فويس|تسجيل)|كلمني.*صوت|سمعني|سجل.*صوت|رد.*تسجيل/i.test(activeUserMessage);
-                        const shouldSendVoiceReply = isVoiceOrAudio || userExplicitlyRequestedVoice || process.env.ENABLE_VOICE_REPLIES === 'true';
-
-                        if (shouldSendVoiceReply) {
+                        // Delivery Attempt 3: If target is LID and earlier attempts failed, send to fromStr directly
+                        if (!sent && fromStr) {
                             try {
-                                console.log(`[WhatsApp Voice TTS] Synthesizing Lulwa voice reply for ${conversationId}...`);
+                                await whatsappClient.sendMessage(fromStr, reply + "\u200B");
+                                sent = true;
+                            } catch {}
+                        }
+
+                        // Voice Reply (if user sent voice, requested voice, or ENABLE_VOICE_REPLIES is true)
+                        const userRequestedVoice = isVoiceOrAudio || /رد.*صوت|ابعت.*فويس|اتكلم.*صوت|عايز.*صوت|سجل.*صوت|رد.*تسجيل/i.test(activeUserMessage);
+                        if ((userRequestedVoice || process.env.ENABLE_VOICE_REPLIES === 'true') && reply) {
+                            try {
+                                console.log(`[WhatsApp Voice] Generating Lulwa voice reply for ${conversationId}...`);
                                 const { oggBuffer } = await generateVoiceAudio(reply, 'lulwa');
                                 const voiceMedia = new MessageMedia('audio/ogg; codecs=opus', oggBuffer.toString('base64'), 'voice.ogg');
-                                
-                                let voiceSent = false;
                                 if (typeof msg.reply === 'function') {
-                                    try {
-                                        await msg.reply(voiceMedia, undefined, { sendAudioAsVoice: true });
-                                        voiceSent = true;
-                                        console.log(`[WhatsApp Voice TTS] Voice note sent successfully via msg.reply`);
-                                    } catch (replyVoiceErr: any) {
-                                        console.warn("[WhatsApp Voice] msg.reply failed, trying sendMessage:", replyVoiceErr?.message || replyVoiceErr);
-                                    }
+                                    await msg.reply(voiceMedia, undefined, { sendAudioAsVoice: true });
+                                } else {
+                                    await whatsappClient.sendMessage(conversationId, voiceMedia, { sendAudioAsVoice: true });
                                 }
-                                
-                                if (!voiceSent && whatsappClient) {
-                                    await whatsappClient.sendMessage(fromStr, voiceMedia, { sendAudioAsVoice: true });
-                                    console.log(`[WhatsApp Voice TTS] Voice note sent successfully via sendMessage(${fromStr})`);
-                                }
-                            } catch (voiceReplyErr: any) {
-                                console.warn("[WhatsApp Voice Reply Error]:", voiceReplyErr?.message || voiceReplyErr);
+                                console.log(`[WhatsApp Voice] Sent voice reply successfully!`);
+                            } catch (vErr: any) {
+                                console.warn("[WhatsApp Voice Send Warning]:", vErr?.message || vErr);
                             }
                         }
                     }
                 } catch (msgErr: any) {
                     console.error("[WhatsApp] Error in message handler:", msgErr?.message || msgErr);
                 }
-            };
-
-            // Register handler for BOTH message (standard incoming) and message_create (outbound & all created)
-            whatsappClient.on('message', handleIncomingMessage);
-            whatsappClient.on('message_create', handleIncomingMessage);
+            });
 
             whatsappClient.initialize().then(() => {
                 if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
                 isStartingWhatsApp = false;
                 console.log("[WhatsApp] Client initialization completed successfully.");
-                
-                // Auto-dismiss any blocking WhatsApp Web dialogs & auto-trigger sync if missed
-                setInterval(async () => {
-                    try {
-                        const pup = (whatsappClient as any)?.pupPage;
-                        if (pup && !pup.isClosed?.()) {
-                            await pup.evaluate(() => {
-                                const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
-                                const continueBtn = buttons.find(b => {
-                                    const txt = b.textContent?.trim() || '';
-                                    return txt === 'متابعة' || txt === 'Continue' || txt === 'حسناً' || txt === 'OK';
-                                });
-                                if (continueBtn) {
-                                    (continueBtn as HTMLElement).click();
-                                }
-                            });
-
-                            const syncState = await pup.evaluate(async () => {
-                                const w = window as any;
-                                const isPane = !!document.querySelector('#pane-side, div[role="row"]');
-                                const hasSynced = w.AuthStore?.AppState?.hasSynced;
-                                const missingStore = !w.Store || !w.WWebJS;
-                                
-                                if ((hasSynced || isPane) && missingStore && typeof w.onAppStateHasSyncedEvent === 'function') {
-                                    try {
-                                        await w.onAppStateHasSyncedEvent();
-                                        return 'triggered_sync';
-                                    } catch (err: any) {
-                                        return 'sync_error: ' + (err?.message || err);
-                                    }
-                                }
-                                return null;
-                            });
-
-                            if (syncState === 'triggered_sync') {
-                                console.log("[WhatsApp] Successfully triggered onAppStateHasSyncedEvent to expose Store & attach message listeners!");
-                            }
-                        }
-                    } catch (e: any) {
-                        console.warn("[WhatsApp Auto-Sync Monitor Warning]:", e?.message || e);
-                    }
-                }, 3000);
             }).catch(err => {
                 if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
                 console.error("WhatsApp Initialization Error:", err);
@@ -2888,82 +2721,6 @@ async function startServer() {
             ageSeconds: ageSec,
             expiresInSec: Math.max(0, 20 - ageSec)
         });
-    });
-
-    app.get('/api/debug/wa-dismiss-modal', async (req, res) => {
-        try {
-            if (!whatsappClient?.pupPage) return res.json({ error: 'no pupPage' });
-            const clicked = await whatsappClient.pupPage.evaluate(() => {
-                const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
-                const continueBtn = buttons.find(b => b.textContent?.includes('متابعة') || b.textContent?.includes('Continue') || b.textContent?.includes('حسناً') || b.textContent?.includes('OK'));
-                if (continueBtn) {
-                    (continueBtn as HTMLElement).click();
-                    return continueBtn.textContent;
-                }
-                return null;
-            });
-            res.json({ clicked });
-        } catch (e: any) {
-            res.status(500).json({ error: e?.message });
-        }
-    });
-
-    app.get('/api/debug/wa-trigger-sync', async (req, res) => {
-        try {
-            const pup = (whatsappClient as any)?.pupPage;
-            if (!pup) return res.json({ error: 'no pupPage' });
-            const syncResult = await pup.evaluate(async () => {
-                const w = window as any;
-                if (typeof w.onAppStateHasSyncedEvent === 'function') {
-                    try {
-                        await w.onAppStateHasSyncedEvent();
-                        return 'called_onAppStateHasSyncedEvent_success';
-                    } catch (e: any) {
-                        return 'called_with_error: ' + (e?.message || e);
-                    }
-                }
-                return 'no_onAppStateHasSyncedEvent';
-            });
-            res.json({ syncResult });
-        } catch (e: any) {
-            res.status(500).json({ error: e?.message });
-        }
-    });
-
-    app.get('/api/debug/wa-info', async (req, res) => {
-        try {
-            if (!whatsappClient?.pupPage) return res.json({ error: 'no pupPage' });
-            const pageUrl = await whatsappClient.pupPage.url();
-            const title = await whatsappClient.pupPage.title();
-            const text = await whatsappClient.pupPage.evaluate(() => document.body?.innerText?.substring(0, 300) || '');
-            const diagnostics = await whatsappClient.pupPage.evaluate(() => {
-                const w = window as any;
-                return {
-                    hasAuthStore: typeof w.AuthStore !== 'undefined',
-                    hasStore: typeof w.Store !== 'undefined',
-                    hasWWebJS: typeof w.WWebJS !== 'undefined',
-                    hasSynced: w.AuthStore?.AppState?.hasSynced,
-                    appState: w.AuthStore?.AppState?.state,
-                    hasPaneSide: !!document.querySelector('#pane-side')
-                };
-            });
-            res.json({ pageUrl, title, text, isWhatsappConnected, diagnostics });
-        } catch (e: any) {
-            res.status(500).json({ error: e?.message });
-        }
-    });
-
-    app.get('/api/debug/wa-screenshot', async (req, res) => {
-        try {
-            if (!whatsappClient?.pupPage) return res.status(500).send('no pupPage');
-            const pageUrl = await whatsappClient.pupPage.url();
-            const screenshot = await whatsappClient.pupPage.screenshot({ encoding: 'binary' });
-            res.setHeader('X-WA-Page-URL', pageUrl);
-            res.setHeader('Content-Type', 'image/png');
-            res.send(screenshot);
-        } catch (e: any) {
-            res.status(500).send(e?.message);
-        }
     });
 
     app.get(['/api/whatsapp-qr.png', '/api/qr.png'], (req, res) => {
