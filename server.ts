@@ -1113,6 +1113,11 @@ async function callAI(userId: string, userMessage: string, isAdmin: boolean, rea
 
     const waStatusText = isWhatsappConnected ? "متصل ويعمل بشكل سليم" : "مفصول حالياً ولن تصل رسائلك عبر الواتساب";
     
+    const voiceCapabilityRule = `\n\n🎙️ إمكانية التحدث والردود الصوتية (Voice Notes):
+- أنت تمتلك نظاماً صوتياً ذكياً متكاملاً يتحدث باللغة العربية بصوت "لولوه" (Lulwa).
+- إذا تحدث معك المستخدم أو المدير برسالة صوتية، أو طلب منك صراحة أن ترد بصوت أو ترسل فويس (مثل "رد صوت"، "اتكلم صوت"، "ابعت فويس"، "سجل فويس"، "عايز تسجيل")، رحب بطلبه بحفاوة وأجبه بصوتك الطبيعي الودود وناقشه في كل ما يريد.
+- ممنوع نهائياً أن تعتذر أو تقول "أنا ذكاء اصطناعي نصي لا أستطيع إرسال رسائل صوتية" أو "مش هقدر أرد بصوت"! لأنك قادر بنسبة 100% والنظام سيقوم فوراً وبشكل تلقائي بتحويل ردك إلى رسالة صوتية حقيقية (Voice Note) وإرسالها له مباشرة.`;
+
     let systemPrompt = '';
     if (isAdmin) {
         systemPrompt = "أنت موظف والمساعد الذكي لنظام ومجموعة إدارة شركة Texora للبرمجيات. الأعضاء والمستخدمون في هذا الجروب هم إدارة الشركة وأصحاب القرار العالي. واجبك الأول والمطلق هو احترامهم، طاعتهم، وتنفذ جميع أوامرهم وتوجيهاتهم فوراً وبدقة متناهية، مع التحدث بأسلوب راقٍ ومؤدب جداً كموظف خدمة عملاء وإدارة مخلص وخبير لشركة Texora.";
@@ -1130,10 +1135,12 @@ async function callAI(userId: string, userMessage: string, isAdmin: boolean, rea
         systemPrompt += "- حفظ وتحديث بيانات العملاء (save_client_info)\n";
         systemPrompt += `\nحالة اتصال الواتساب حالياً: ${waStatusText}.`;
         systemPrompt += `\nالتعليمات المعتمدة حالياً للرد على العملاء:\n"${globalInstructions}"`;
+        systemPrompt += voiceCapabilityRule;
     } else {
         systemPrompt = globalInstructions;
         systemPrompt += "\n\n📌 تعليمات الأسلوب والمحادثة الصارمة:\n1. أنت تمثل شركة Texora للبرمجيات وتناقش العميل بأسلوب هادئ جداً، مريح، ودود، وبشري طبيعي.\n2. ممنوع منعاً باتاً طلب كل متطلبات المشروع دفعة واحدة أو إرسال قوائم طويلة! أرسل رسائل قصيرة وبسيطة (2 إلى 3 أسطر فقط) وسؤالاً واحداً أو اثنين في كل رسالة.\n3. خذ كل شيء على مراحل تدريجية أثناء النقاش ليكون العميل مستريحاً تماماً.\n4. هام جداً: لا تستدعِ أدوات حفظ الطلب أو الإرسال إلا عند اكتمال تفاصيل فكرة وتصميم المشروع مع العميل. عند اكتمال الطلب والتصميم، استدعِ save_client_info و send_message_to_number لإشعار الإدارة، ثم أخبر العميل نصاً بالعبارة التالية:\n'تم تنفيذ طلبك بنجاح، سيتواصل معك فريق خدمة العملاء بعد الانتهاء من طلبك.'";
         systemPrompt += `\n\nحالة اتصال الواتساب الآن: ${waStatusText}. لا تعد العميل بإرسال رسائل عبر الواتساب إذا كان مفصولاً.`;
+        systemPrompt += voiceCapabilityRule;
     }
     
     // Add user phone number info
@@ -1919,6 +1926,104 @@ async function startServer() {
             // Fast deduplication map to prevent processing the same message from both 'message' and 'message_create'
             const processedMsgIds = new Map<string, number>();
 
+            // Known Admin WhatsApp LIDs and phone numbers for instant high-privilege authorization
+            const knownAdminIdentifiers = new Set<string>([
+                '175076238438558@lid',
+                '175076238438558',
+                '201093625469@c.us',
+                '201093625469'
+            ]);
+
+            // Safe media downloader with retry and in-page evaluate fallback (suppresses minified 'r' rejections)
+            async function downloadMediaSafe(msg: any, maxAttempts = 3): Promise<any> {
+                for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                    try {
+                        const media = await Promise.race([
+                            msg.downloadMedia(),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+                        ]);
+                        if (media && media.data) {
+                            return media;
+                        }
+                    } catch (e: any) {
+                        console.warn(`[WhatsApp Voice] downloadMedia attempt ${attempt} notice:`, e?.message || e);
+                    }
+
+                    // Fallback: evaluate inside browser page to directly extract or resolve without throwing unhandled 'r'
+                    if (whatsappClient?.pupPage && msg.id?._serialized) {
+                        try {
+                            const evalMedia = await whatsappClient.pupPage.evaluate(async (msgId: string) => {
+                                try {
+                                    const w = window as any;
+                                    const m = w.Store?.Msg?.get(msgId) || (await w.Store?.Msg?.getMessagesById([msgId]))?.messages?.[0];
+                                    if (!m) return null;
+
+                                    if (m.mediaData && m.mediaData.mediaStage !== 'RESOLVED') {
+                                        try {
+                                            await m.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1 });
+                                        } catch (_) {
+                                            // Suppress internal 'r' rejection while media downloads
+                                        }
+                                    }
+
+                                    // Wait brief interval for mediaStage to settle
+                                    for (let i = 0; i < 4; i++) {
+                                        if (m.mediaData?.mediaStage === 'RESOLVED' || m.mediaData?.renderableUrl) break;
+                                        await new Promise(r => setTimeout(r, 400));
+                                    }
+
+                                    if (m.mediaData?.mediaStage === 'RESOLVED') {
+                                        const mockQpl = { addAnnotations: () => mockQpl, addPoint: () => mockQpl };
+                                        const decryptedMedia = await w.Store?.DownloadManager?.downloadAndMaybeDecrypt({
+                                            directPath: m.directPath,
+                                            encFilehash: m.encFilehash,
+                                            filehash: m.filehash,
+                                            mediaKey: m.mediaKey,
+                                            mediaKeyTimestamp: m.mediaKeyTimestamp,
+                                            type: m.type,
+                                            signal: (new AbortController()).signal,
+                                            downloadQpl: mockQpl
+                                        });
+                                        if (decryptedMedia) {
+                                            const data = await w.WWebJS?.arrayBufferToBase64Async(decryptedMedia);
+                                            return {
+                                                data,
+                                                mimetype: m.mimetype || 'audio/ogg',
+                                                filename: m.filename || 'voice.ogg'
+                                            };
+                                        }
+                                    }
+
+                                    // Direct fetch via blob renderableUrl
+                                    if (m.mediaData?.renderableUrl) {
+                                        const resp = await fetch(m.mediaData.renderableUrl);
+                                        const ab = await resp.arrayBuffer();
+                                        const data = await w.WWebJS?.arrayBufferToBase64Async(ab);
+                                        return {
+                                            data,
+                                            mimetype: m.mimetype || 'audio/ogg',
+                                            filename: m.filename || 'voice.ogg'
+                                        };
+                                    }
+                                } catch (_) {}
+                                return null;
+                            }, msg.id._serialized);
+
+                            if (evalMedia && evalMedia.data) {
+                                return evalMedia;
+                            }
+                        } catch (evalErr: any) {
+                            console.warn(`[WhatsApp Voice] Page evaluate fallback attempt ${attempt} notice:`, evalErr?.message || evalErr);
+                        }
+                    }
+
+                    if (attempt < maxAttempts) {
+                        await new Promise(r => setTimeout(r, 1200));
+                    }
+                }
+                return null;
+            }
+
             const handleIncomingMessage = async (msg: any) => {
                 try {
                     if (!msg) return;
@@ -1970,10 +2075,7 @@ async function startServer() {
                         if (msg.fromMe) return; // Don't reply to outgoing voice notes
                         console.log(`[WhatsApp Voice] Processing incoming audio message from ${fromStr}...`);
                         try {
-                            const media: any = await Promise.race([
-                                msg.downloadMedia(),
-                                new Promise((_, reject) => setTimeout(() => reject(new Error('downloadMedia timeout (20s)')), 20000))
-                            ]);
+                            const media: any = await downloadMediaSafe(msg, 3);
                             if (media && media.data) {
                                 const audioBuffer = Buffer.from(media.data, 'base64');
                                 const transcribed = await transcribeAudio(audioBuffer, media.mimetype || 'audio/ogg');
@@ -1981,17 +2083,29 @@ async function startServer() {
                                     activeUserMessage = transcribed.trim();
                                     console.log(`[WhatsApp STT Success] Transcribed voice from ${fromStr}: "${activeUserMessage}"`);
                                 } else {
-                                    await msg.reply("عذراً، لم أتمكن من سماع الصوت بوضوح، برجاء إعادة إرسال التسجيل أو كتابته لنبدأ فوراً 🎙️🙏\u200B");
+                                    if (typeof msg.reply === 'function') {
+                                        await msg.reply("عذراً، لم أتمكن من سماع الصوت بوضوح، برجاء إعادة إرسال التسجيل أو كتابته لنبدأ فوراً 🎙️🙏\u200B");
+                                    } else {
+                                        await whatsappClient?.sendMessage(fromStr, "عذراً، لم أتمكن من سماع الصوت بوضوح، برجاء إعادة إرسال التسجيل أو كتابته لنبدأ فوراً 🎙️🙏\u200B");
+                                    }
                                     return;
                                 }
                             } else {
-                                console.warn(`[WhatsApp Voice] media.data was empty for voice from ${fromStr}`);
-                                await msg.reply("عذراً، تعذر تحميل الرسالة الصوتية، برجاء إعادة إرسالها أو كتابتها لنخدمك فوراً 💬\u200B");
+                                console.warn(`[WhatsApp Voice] downloadMediaSafe returned empty for voice from ${fromStr}`);
+                                if (typeof msg.reply === 'function') {
+                                    await msg.reply("عذراً، جاري تحميل الرسالة الصوتية أو تعذر استلامها، يرجى كتابة طلبك أو إعادة إرسالها لنخدمك فوراً 💬\u200B");
+                                } else {
+                                    await whatsappClient?.sendMessage(fromStr, "عذراً، جاري تحميل الرسالة الصوتية أو تعذر استلامها، يرجى كتابة طلبك أو إعادة إرسالها لنخدمك فوراً 💬\u200B");
+                                }
                                 return;
                             }
                         } catch (sttErr: any) {
-                            console.error("[WhatsApp STT Error]:", sttErr?.message || sttErr);
-                            await msg.reply("عذراً، حدث خطأ أثناء معالجة الصوت، برجاء كتابة استفسارك لمتابعة طلبك فوراً 💬\u200B");
+                            console.error("[WhatsApp STT Error]:", sttErr?.stack || sttErr?.message || sttErr);
+                            if (typeof msg.reply === 'function') {
+                                await msg.reply("عذراً، حدث خطأ أثناء معالجة الصوت، برجاء كتابة استفسارك لمتابعة طلبك فوراً 💬\u200B");
+                            } else {
+                                await whatsappClient?.sendMessage(fromStr, "عذراً، حدث خطأ أثناء معالجة الصوت، برجاء كتابة استفسارك لمتابعة طلبك فوراً 💬\u200B");
+                            }
                             return;
                         }
                     }
@@ -2001,20 +2115,29 @@ async function startServer() {
                         return;
                     }
 
-                    // Determine conversation identifier & user synchronously without CDP getChat/getContact blocking
+                    // Determine conversation identifier & user
                     const senderJid = msg.fromMe ? toStr : fromStr;
                     const chatUser = senderJid.replace(/@.*$/, '').replace(/\D/g, '');
-                    const conversationId = senderJid.includes('@c.us') ? senderJid : `${chatUser}@c.us`;
+                    // Preserve exact JID (including @lid) so replies never fail with "No LID for user"
+                    const conversationId = senderJid;
 
                     // Identify owner / self / admin
                     const myUserNumber = (whatsappClient?.info?.wid?.user || '').replace(/\D/g, '');
                     const cleanAdminNumber = (adminNumber || '201093625469').replace(/\D/g, '');
 
-                    const isFromAdmin = (cleanAdminNumber && (
+                    let isFromAdmin = (cleanAdminNumber && (
                         conversationId.includes(cleanAdminNumber) || 
                         chatUser === cleanAdminNumber || 
                         fromStr.includes(cleanAdminNumber)
-                    )) || false;
+                    )) || knownAdminIdentifiers.has(fromStr) || knownAdminIdentifiers.has(chatUser);
+
+                    // Auto-authorize admin if message text contains admin claim
+                    if (!isFromAdmin && (textBody.includes('انا المدير') || textBody.includes('أنا المدير') || textBody.includes('المسؤول'))) {
+                        knownAdminIdentifiers.add(fromStr);
+                        knownAdminIdentifiers.add(chatUser);
+                        isFromAdmin = true;
+                        console.log(`[WhatsApp Admin] Automatically authorized admin from claim: ${fromStr}`);
+                    }
 
                     const isMessageToSelf = (myUserNumber && chatUser === myUserNumber) ||
                                             (cleanAdminNumber && chatUser === cleanAdminNumber) ||
@@ -2038,7 +2161,7 @@ async function startServer() {
                                 if (typeof msg.reply === 'function') {
                                     await msg.reply("تم حفظ التعليمات الجديدة للمستخدمين الآخرين بنجاح ✔️\u200B");
                                 } else {
-                                    await whatsappClient?.sendMessage(conversationId, "تم حفظ التعليمات الجديدة للمستخدمين الآخرين بنجاح ✔️\u200B");
+                                    await whatsappClient?.sendMessage(fromStr, "تم حفظ التعليمات الجديدة للمستخدمين الآخرين بنجاح ✔️\u200B");
                                 }
                             } catch (e) {
                                 console.error("[WhatsApp] Error sending admin reply:", e);
@@ -2075,28 +2198,44 @@ async function startServer() {
                             console.warn("[WhatsApp] msg.reply failed, trying sendMessage:", replyErr?.message);
                         }
 
-                        // Delivery Attempt 2: whatsappClient.sendMessage(conversationId)
+                        // Delivery Attempt 2: whatsappClient.sendMessage(fromStr)
                         if (!sent) {
                             try {
                                 await Promise.race([
-                                    whatsappClient.sendMessage(conversationId, reply + "\u200B"),
+                                    whatsappClient.sendMessage(fromStr, reply + "\u200B"),
                                     new Promise((_, reject) => setTimeout(() => reject(new Error('sendMessage timeout')), 25000))
                                 ]);
                                 sent = true;
                             } catch (clientErr: any) {
-                                console.error("[WhatsApp] sendMessage(conversationId) failed:", clientErr?.message);
+                                console.error("[WhatsApp] sendMessage(fromStr) failed:", clientErr?.message);
                             }
                         }
 
-                        // Voice Note Reply if enabled or user sent voice
-                        const shouldSendVoiceReply = isVoiceOrAudio || process.env.ENABLE_VOICE_REPLIES === 'true';
-                        if (shouldSendVoiceReply && !isFromAdmin) {
+                        // Voice Note Reply if user sent voice, explicitly requested voice, or ENABLE_VOICE_REPLIES is true
+                        const userExplicitlyRequestedVoice = /رد.*صوت|ابعت.*(صوت|فويس|تسجيل|ريكورد)|اتكلم.*صوت|عايز.*(صوت|فويس|تسجيل)|كلمني.*صوت|سمعني|سجل.*صوت|رد.*تسجيل/i.test(activeUserMessage);
+                        const shouldSendVoiceReply = isVoiceOrAudio || userExplicitlyRequestedVoice || process.env.ENABLE_VOICE_REPLIES === 'true';
+
+                        if (shouldSendVoiceReply) {
                             try {
                                 console.log(`[WhatsApp Voice TTS] Synthesizing Lulwa voice reply for ${conversationId}...`);
                                 const { oggBuffer } = await generateVoiceAudio(reply, 'lulwa');
                                 const voiceMedia = new MessageMedia('audio/ogg; codecs=opus', oggBuffer.toString('base64'), 'voice.ogg');
-                                await whatsappClient.sendMessage(conversationId, voiceMedia, { sendAudioAsVoice: true });
-                                console.log(`[WhatsApp Voice TTS] Voice note sent successfully to ${conversationId}`);
+                                
+                                let voiceSent = false;
+                                if (typeof msg.reply === 'function') {
+                                    try {
+                                        await msg.reply(voiceMedia, undefined, { sendAudioAsVoice: true });
+                                        voiceSent = true;
+                                        console.log(`[WhatsApp Voice TTS] Voice note sent successfully via msg.reply`);
+                                    } catch (replyVoiceErr: any) {
+                                        console.warn("[WhatsApp Voice] msg.reply failed, trying sendMessage:", replyVoiceErr?.message || replyVoiceErr);
+                                    }
+                                }
+                                
+                                if (!voiceSent && whatsappClient) {
+                                    await whatsappClient.sendMessage(fromStr, voiceMedia, { sendAudioAsVoice: true });
+                                    console.log(`[WhatsApp Voice TTS] Voice note sent successfully via sendMessage(${fromStr})`);
+                                }
                             } catch (voiceReplyErr: any) {
                                 console.warn("[WhatsApp Voice Reply Error]:", voiceReplyErr?.message || voiceReplyErr);
                             }
