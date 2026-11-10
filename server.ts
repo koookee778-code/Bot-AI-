@@ -21,6 +21,7 @@ import * as cheerio from 'cheerio';
 import { transcribeAudio, generateVoiceAudio, cleanTextForSpeech } from './audio_service.ts';
 import { TEXORA_KNOWLEDGE_BASE } from './texora_knowledge.ts';
 import {
+    supabase,
     getActiveServices,
     addWebsiteService,
     removeWebsiteService,
@@ -289,6 +290,49 @@ const tools = [
   {
     type: "function",
     function: {
+      name: "send_team_group_message",
+      description: "Admin only: Send an official alert, notice, announcement, holiday notification, or instructions directly to the Texora Team WhatsApp Group (جروب فريق العمل).",
+      parameters: {
+        type: "object",
+        properties: {
+          message: { type: "string", description: "The announcement or alert text to dispatch to the team group" },
+          title: { type: "string", description: "Optional title or headline (e.g. 'تنبيه إجازة رسمية', 'إشعار إداري عاجل')" }
+        },
+        required: ["message"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "broadcast_to_clients",
+      description: "Admin only: Send an announcement, holiday notice, apology for delays, or update to all registered clients via WhatsApp.",
+      parameters: {
+        type: "object",
+        properties: {
+          message: { type: "string", description: "The announcement or notification message content to send to all clients" }
+        },
+        required: ["message"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "cleanup_dummy_data",
+      description: "Admin only: Clean up fake or test orders, dummy employees, and test clients from the Supabase database.",
+      parameters: {
+        type: "object",
+        properties: {
+          confirm: { type: "boolean", description: "Confirmation to proceed with deleting fake test records" }
+        },
+        required: ["confirm"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "save_client_info",
       description: "Save client contact, project specifications, and budget in Supabase database, and automatically dispatch the project pickup card to the Texora Team Group.",
       parameters: {
@@ -535,6 +579,40 @@ const geminiTools: FunctionDeclaration[] = [
         messageDetails: { type: Type.STRING, description: "Full structured details of the completed project specifications" }
       },
       required: ["messageDetails"]
+    }
+  },
+  {
+    name: "send_team_group_message",
+    description: "Admin only: Send an official alert, notice, announcement, holiday notification, or instructions directly to the Texora Team WhatsApp Group (جروب فريق العمل).",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        message: { type: Type.STRING, description: "The announcement or alert text to dispatch to the team group" },
+        title: { type: Type.STRING, description: "Optional title or headline" }
+      },
+      required: ["message"]
+    }
+  },
+  {
+    name: "broadcast_to_clients",
+    description: "Admin only: Send an announcement, holiday notice, apology for delays, or update to all registered clients via WhatsApp.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        message: { type: Type.STRING, description: "The announcement or notification message content to send to all clients" }
+      },
+      required: ["message"]
+    }
+  },
+  {
+    name: "cleanup_dummy_data",
+    description: "Admin only: Clean up fake or test orders, dummy employees, and test clients from the Supabase database.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        confirm: { type: Type.BOOLEAN, description: "Confirmation to proceed with deleting fake test records" }
+      },
+      required: ["confirm"]
     }
   },
   {
@@ -1317,13 +1395,95 @@ ${requestDetails}
             return `تم الانتهاء بنجاح! تم إرسال رسالتك والعرض إلى ${sentCount} عميل.`;
         }
         return "تطبيق الواتساب غير متصل حالياً.";
+    } else if (funcName === 'send_team_group_message') {
+        if (!isAdmin && userId !== 'SYSTEM_SCHEDULER') {
+            return "هذه الأداة مخصصة للمدير المعتمد فقط لنشر تنبيهات في جروب فريق العمل.";
+        }
+        if (!whatsappClient || !isWhatsappConnected) {
+            return "تعذر إرسال التنبيه: تطبيق الواتساب غير متصل حالياً.";
+        }
+        const currentTeamGroup = teamGroupId || '120363412539964956@g.us';
+        const title = args.title || '🔔 إشعار وتنبيه إداري رسمي من إدارة Texora';
+        const bodyMsg = args.message || userMessage;
+        const formattedNotice = 
+`━━━━━━━━━━━━━━━━━━━━
+${title}
+━━━━━━━━━━━━━━━━━━━━
+${bodyMsg}
+
+⏰ *الوقت:* ${new Date().toLocaleString('ar-EG')}
+🤖 _المساعد الذكي: ${botName}_`;
+
+        try {
+            await whatsappClient.sendMessage(currentTeamGroup, formattedNotice);
+            console.log(`[Team Group Notice Tool] Successfully dispatched announcement to ${currentTeamGroup}`);
+            return `تم إرسال التنبيه الرسمي بنجاح وفوراً إلى جروب فريق عمل Texora الداخلي (Texora Team Group)! 🚀`;
+        } catch (grpErr: any) {
+            console.error(`[Team Group Notice Tool Error]:`, grpErr?.message || grpErr);
+            return `حدث خطأ أثناء الإرسال لجروب العمل: ${grpErr?.message || grpErr}`;
+        }
+    } else if (funcName === 'broadcast_to_clients') {
+        if (!isAdmin && userId !== 'SYSTEM_SCHEDULER') {
+            return "هذه الأداة مخصصة للمدير المعتمد فقط.";
+        }
+        if (!whatsappClient || !isWhatsappConnected) {
+            return "تعذر الإرسال: تطبيق الواتساب غير متصل حالياً.";
+        }
+        const clients = await getAllClients();
+        if (!clients || clients.length === 0) {
+            return "لا يوجد عملاء مسجلون حالياً في قاعدة البيانات لإرسال الإشعار إليهم.";
+        }
+        const messageText = args.message || 'عميلنا العزيز في شركة Texora للبرمجيات 🌿\nنود إحاطتكم علماً بأن غداً إجازة رسمية لدى فريق العمل. سنسعد بمواصلة الرد ومتابعة طلباتكم فور انتهاء الإجازة.\nنشكركم لتفهمكم ودمتم بخير! ✨';
+        let sentCount = 0;
+        for (const client of clients) {
+            let cleanPhone = (client.phone || client.id || '').replace(/\D/g, '');
+            if (cleanPhone.startsWith('0')) cleanPhone = '2' + cleanPhone;
+            if (!cleanPhone.startsWith('2') && cleanPhone.length === 10) cleanPhone = '20' + cleanPhone;
+            if (cleanPhone.length >= 10) {
+                try {
+                    await whatsappClient.sendMessage(`${cleanPhone}@c.us`, messageText + "\u200B");
+                    sentCount++;
+                } catch (e) {}
+            }
+        }
+        return `تم إرسال الإشعار والتنبيه بنجاح إلى (${sentCount}) من عملاء الشركة المسجلين في Supabase! 📨`;
+    } else if (funcName === 'cleanup_dummy_data') {
+        if (!isAdmin && userId !== 'SYSTEM_SCHEDULER') {
+            return "هذه العملية مخصصة للمدير المعتمد فقط.";
+        }
+        try {
+            await supabase.from('employees').delete().ilike('id', '%98765432%');
+            await supabase.from('orders').delete().or('client_name.ilike.%تجربة%,phone.ilike.%01012345678%,phone.ilike.%201012345678%');
+            await supabase.from('clients').delete().ilike('name', '%تجربة%');
+            return "تم تنظيف جميع البيانات الوهمية وحسابات الاختبار من قاعدة بيانات Supabase بنجاح ✔️";
+        } catch (err: any) {
+            return `حدث خطأ أثناء تنظيف البيانات: ${err?.message || err}`;
+        }
     } else if (funcName === 'send_message_to_number') {
         try {
+            const rawTargetStr = (args.number || '').toString().toLowerCase();
+            const currentTeamGroup = teamGroupId || '120363412539964956@g.us';
+            let finalMessage = args.messageDetails || args.message || 'تم استلام تفاصيل المشروع بنجاح';
+
+            // Check if group destination was intended
+            if (rawTargetStr.includes('group') || rawTargetStr.includes('جروب') || rawTargetStr.includes('فريق') || rawTargetStr.includes('العمال') || rawTargetStr.includes('120363412539964956')) {
+                if (whatsappClient && isWhatsappConnected) {
+                    const notice = 
+`🔔 *إشعار وتنبيه إداري رسمي من إدارة TEXORA* 📢
+━━━━━━━━━━━━━━━━━━━━
+${finalMessage}
+━━━━━━━━━━━━━━━━━━━━
+⏰ *الوقت:* ${new Date().toLocaleString('ar-EG')}
+🤖 _المساعد الذكي: ${botName}_`;
+                    await whatsappClient.sendMessage(currentTeamGroup, notice);
+                    return `تم إرسال الرسالة والتنبيه بنجاح إلى جروب فريق عمل Texora (Texora Team Group)! 🚀`;
+                }
+            }
+
             const clientPhone = (chatHistories[userId] as any)?.clientPhone || userId.replace('@c.us', '').replace('@lid', '');
             const savedClient = clientsDB[clientPhone];
             const clientNameStr = savedClient?.name ? `\n👤 *اسم العميل:* ${savedClient.name}` : '';
             
-            let finalMessage = args.messageDetails || args.message || 'تم استلام تفاصيل المشروع بنجاح';
             // Only format as a project lead report if it's not a direct custom message from admin
             if (!isAdmin && clientPhone && clientPhone !== userId) {
                 finalMessage = `🚀 *طلب وتصميم مشروع جديد - شركة Texora للبرمجيات* 🚀\n\n` + 
@@ -1510,6 +1670,9 @@ async function callAI(userId: string, userMessage: string, isAdmin: boolean, rea
 - جدولة المهام والتذكيرات في Supabase (schedule_admin_task)
 - إضافة أو حذف الخدمات على موقع الشركة وقاعدة بيانات Supabase (add_website_service / delete_website_service / list_website_services)
 - إرسال رسائل أو تنبيهات لأي رقم (send_message_to_number)
+- إرسال تنبيهات رسمية أو إشعار إجازة لجروب فريق العمل (send_team_group_message)
+- إرسال إشعارات أو اعتذار أو تنبيه إجازة لجميع عملاء الشركة المسجلين (broadcast_to_clients)
+- تنظيف وتطهير قاعدة البيانات من الحسابات والطلبات الوهمية (cleanup_dummy_data)
 - إرسال عروض جماعية للعملاء (broadcast_offer)
 - تصفح الروابط، البحث على الإنترنت، ولقطات الشاشة (web_search, read_url, capture_screenshot)
 \nالتعليمات المعتمدة حالياً للرد على العملاء:\n"${globalInstructions}"`;
@@ -2478,6 +2641,89 @@ async function startServer() {
                             await msg.reply(txt).catch(() => whatsappClient?.sendMessage(conversationId, txt));
                             return;
                         }
+
+                        // 8. Direct Team Group Alert / Notice / Holiday Broadcast
+                        if (/(?:ارسل|ابعث|بلغ|قول|نبه|تنبيه|اكتب|نزل|رسالة|إشعار|اشعار).*(?:لجروب|في جروب|للفريق|للعمال|لفريق العمل|جروب العمل|جروب فريق العمل|جروب العمال)/i.test(activeUserMessage) ||
+                            /(?:لجروب|في جروب|جروب العمل|جروب العمال).*(?:ارسل|ابعث|بلغ|قول|تنبيه|إجازة|اجازة|اجازه|إجازه)/i.test(activeUserMessage)) {
+                            
+                            const currentTeamGroup = teamGroupId || '120363412539964956@g.us';
+                            let noticeBody = activeUserMessage
+                                .replace(/^(?:ارسل|ابعث|بلغ|قول|نبه|تنبيه|اكتب|نزل)\s+/i, '')
+                                .replace(/(?:لجروب|في جروب|للفريق|للعمال|لفريق العمل|جروب العمل|جروب فريق العمل|جروب العمال)\s*/i, '')
+                                .replace(/(?:ضروري|بسرعة|فورا|فوراً)/i, '')
+                                .trim();
+
+                            if (!noticeBody || noticeBody.length < 3) {
+                                noticeBody = 'إشعار إداري: نود إحاطتكم علماً بأن غداً إجازة رسمية لجميع أفراد فريق العمل، يُرجى التنسيق وتأجيل تسليم المهام إلى ما بعد الإجازة.';
+                            } else if (/إجازة|اجازة|اجازه|إجازه/i.test(noticeBody) && noticeBody.length < 35) {
+                                noticeBody = `📢 *تنبيه إداري رسمي:* نود إحاطة جميع الزملاء في فريق العمل بأن غداً إجازة رسمية لجميع الكوادر. نتمنى لكم وقتاً سعيداً وراحة طيبة! 🌿✨`;
+                            }
+
+                            const formattedGroupNotice = 
+`🔔 *إشعار وتنبيه إداري رسمي من إدارة TEXORA* 📢
+━━━━━━━━━━━━━━━━━━━━
+${noticeBody}
+━━━━━━━━━━━━━━━━━━━━
+⏰ *تاريخ الإشعار:* ${new Date().toLocaleString('ar-EG')}
+🤖 _المساعد الذكي: ${botName}_`;
+
+                            let sendSuccess = false;
+                            if (whatsappClient) {
+                                try {
+                                    await whatsappClient.sendMessage(currentTeamGroup, formattedGroupNotice);
+                                    sendSuccess = true;
+                                    console.log(`[Direct Admin Action] Successfully sent team group notice to ${currentTeamGroup}`);
+                                } catch (err: any) {
+                                    console.error("[Direct Admin Action Team Group Error]:", err?.message || err);
+                                }
+                            }
+
+                            if (sendSuccess) {
+                                const replyMsg = `✅ *تم إرسال التنبيه الرسمي فوراً إلى جروب فريق العمل (Texora Team Group) بنجاح!* 🚀\n\n📌 *نص التنبيه المُرسل في الجروب:*\n${noticeBody}\u200B`;
+                                await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
+                            } else {
+                                const replyMsg = `⚠️ تعذر إرسال التنبيه للجروب حالياً، يرجى التأكد من اتصال الواتساب أو محاولة إعادة الإرسال.\u200B`;
+                                await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
+                            }
+                            return;
+                        }
+
+                        // 9. Direct Client Broadcast / Holiday Notice / Apology
+                        if (/(?:بلغ|اعتذر|ارسل|ابعث).*(?:العملاء|للعملاء).*(?:اجازة|إجازة|اجازه|إجازه|عطلة)/i.test(activeUserMessage)) {
+                            const clients = await getAllClients();
+                            const noticeBody = `عميلنا العزيز في شركة Texora للبرمجيات 🌿\nنود إحاطتكم علماً بأن غداً إجازة رسمية لدى فريق العمل. سنسعد بمواصلة الرد ومتابعة طلباتكم فور انتهاء الإجازة.\nنشكركم لتفهمكم ودمتم بخير! ✨`;
+                            
+                            let sentCount = 0;
+                            if (whatsappClient) {
+                                for (const c of clients) {
+                                    let cleanPhone = (c.phone || c.id || '').replace(/\D/g, '');
+                                    if (cleanPhone.startsWith('0')) cleanPhone = '2' + cleanPhone;
+                                    if (!cleanPhone.startsWith('2') && cleanPhone.length === 10) cleanPhone = '20' + cleanPhone;
+                                    if (cleanPhone.length >= 10) {
+                                        try {
+                                            await whatsappClient.sendMessage(`${cleanPhone}@c.us`, noticeBody + "\u200B");
+                                            sentCount++;
+                                        } catch (e) {}
+                                    }
+                                }
+                            }
+                            const replyMsg = `✅ *تم إرسال تنبيه واعتذار الإجازة بنجاح إلى (${sentCount}) من عملاء الشركة المسجلين في Supabase!* 📨\u200B`;
+                            await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
+                            return;
+                        }
+
+                        // 10. Direct Clean Dummy / Fake Data
+                        if (/نظف.*(?:البيانات|البينات).*(?:الوهمية|الوهميه|التجريبية|التجريبيه)|مسح.*(?:البيانات|البينات).*(?:الوهمية|الوهميه)/i.test(activeUserMessage)) {
+                            await supabase.from('employees').delete().ilike('id', '%98765432%');
+                            await supabase.from('orders').delete().or('client_name.ilike.%تجربة%,phone.ilike.%01012345678%,phone.ilike.%201012345678%');
+                            await supabase.from('clients').delete().ilike('name', '%تجربة%');
+                            const replyMsg = `🧹 *تم تنظيف وتطهير قاعدة بيانات Supabase بنجاح!*
+- تم حذف الموظفين الوهميين وحسابات الاختبار.
+- تم حذف الطلبات التجريبية والبيانات غير الحقيقية.
+- قاعدة البيانات الآن تحتوي فقط على العملاء والمشاريع الحقيقية بنسبة 100% ✨\u200B`;
+                            await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
+                            return;
+                        }
                     }
 
                     // Handling Employee Progress Survey Response in Private Chat
@@ -2846,6 +3092,21 @@ async function startServer() {
         cleanAllChromiumLocks();
         const result = await startWhatsappClient();
         res.json(result);
+    });
+
+    app.post('/api/whatsapp/send', express.json(), async (req, res) => {
+        try {
+            const { target, message } = req.body;
+            if (!message) return res.status(400).json({ success: false, error: 'Message required' });
+            if (!whatsappClient || !isWhatsappConnected) {
+                return res.status(503).json({ success: false, error: 'WhatsApp not connected' });
+            }
+            const targetJid = target || teamGroupId || '120363412539964956@g.us';
+            await whatsappClient.sendMessage(targetJid, message);
+            return res.json({ success: true, target: targetJid, message });
+        } catch (err: any) {
+            return res.status(500).json({ success: false, error: err.message });
+        }
     });
 
     app.post('/api/telegram', (req, res) => res.json({ success: false, message: 'Telegram integration removed' }));
