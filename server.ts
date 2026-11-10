@@ -1709,9 +1709,9 @@ async function callAI(userId: string, userMessage: string, isAdmin: boolean, rea
     // Append new user message to chat history
     chatHistories[userId].push({ role: 'user', content: userMessage });
 
-    // 1. Try Gemini AI only if a valid GEMINI_API_KEY is configured in environment
+    // 1. Try Gemini AI only if a valid GEMINI_API_KEY is configured in environment and not revoked
     const configuredGeminiKey = (process.env.GEMINI_API_KEY || '').trim();
-    if (configuredGeminiKey.length > 10) {
+    if (configuredGeminiKey.length > 10 && !geminiKeyRevoked) {
         try {
             const availableDecls = isAdmin 
                 ? geminiTools 
@@ -1787,6 +1787,10 @@ async function callAI(userId: string, userMessage: string, isAdmin: boolean, rea
             }
         } catch (geminiError: any) {
             console.warn("[Gemini AI Bypass -> Groq]:", geminiError?.message || geminiError);
+            if (String(geminiError?.message || '').includes('leaked') || String(geminiError?.message || '').includes('PERMISSION_DENIED')) {
+                geminiKeyRevoked = true;
+                console.log("[Gemini AI] Revoked/leaked API key detected. Permanently routing to ultra-fast Groq engine.");
+            }
         }
     }
 
@@ -1816,6 +1820,8 @@ try {
 const CONFIG_FILE = 'app_config.json';
 let hasSavedSession = false;
 let isStartingWhatsApp = false;
+let isRestartingWhatsApp = false;
+let geminiKeyRevoked = false;
 let reconnectTimer: NodeJS.Timeout | null = null;
 
 try {
@@ -1889,20 +1895,11 @@ function killOrphanedChromeProcesses() {
             } catch {}
             return;
         }
-        const psOutput = execSync('ps aux || true').toString();
-        const lines = psOutput.split('\n');
-        for (const line of lines) {
-            if (line.includes('chrome') && (line.includes('.wwebjs_auth') || line.includes('session-client-one'))) {
-                const parts = line.trim().split(/\s+/);
-                const pid = parts[1];
-                if (pid && !isNaN(parseInt(pid, 10))) {
-                    try {
-                        process.kill(parseInt(pid, 10), 'SIGKILL');
-                        console.log(`[WhatsApp Cleanup] Killed orphaned chrome process PID ${pid}`);
-                    } catch {}
-                }
-            }
-        }
+        try {
+            execSync('pkill -9 -f "chromium" || true');
+            execSync('pkill -9 -f "chrome" || true');
+            console.log("[WhatsApp Cleanup] Successfully killed all orphaned Chromium and Chrome processes.");
+        } catch {}
     } catch {}
 }
 
@@ -2007,11 +2004,13 @@ async function startServer() {
         if (!page || page._antigravityAttached) return;
         page._antigravityAttached = true;
         page.on('error', (err: any) => {
+            if (isRestartingWhatsApp) return;
             console.error("[WhatsApp Page Crash Detected!]:", err?.message || err);
             isWhatsappConnected = false;
             restartWhatsappClient(false).catch(() => {});
         });
         page.on('close', () => {
+            if (isRestartingWhatsApp || !isWhatsappConnected) return;
             console.warn("[WhatsApp Page Closed unexpectedly!]");
             isWhatsappConnected = false;
             restartWhatsappClient(false).catch(() => {});
@@ -2022,6 +2021,7 @@ async function startServer() {
         if (!browser || browser._antigravityAttached) return;
         browser._antigravityAttached = true;
         browser.on('disconnected', () => {
+            if (isRestartingWhatsApp || !isWhatsappConnected) return;
             console.warn("[WhatsApp PupBrowser Disconnected unexpectedly!]");
             isWhatsappConnected = false;
             restartWhatsappClient(false).catch(() => {});
@@ -2075,8 +2075,7 @@ async function startServer() {
                         '--disable-accelerated-2d-canvas',
                         '--no-first-run',
                         '--disable-gpu',
-                        '--js-flags=--max-old-space-size=256',
-                        '--renderer-process-limit=1',
+                        '--js-flags=--max-old-space-size=512',
                         '--disable-extensions',
                         '--disable-component-extensions-with-background-pages',
                         '--disable-default-apps',
@@ -2970,35 +2969,44 @@ ${noticeBody}
     }, 25000);
 
     async function restartWhatsappClient(cleanAuth = false) {
-        console.log(`[WhatsApp] Performing clean client restart (cleanAuth: ${cleanAuth})...`);
-        if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
-        isStartingWhatsApp = false;
-        if (whatsappClient) {
-            try {
-                await whatsappClient.destroy();
-            } catch (e: any) {
-                console.warn("[WhatsApp] Error destroying client:", e?.message);
+        if (isRestartingWhatsApp) {
+            console.log("[WhatsApp] Restart already in progress, skipping duplicate call.");
+            return;
+        }
+        isRestartingWhatsApp = true;
+        try {
+            console.log(`[WhatsApp] Performing clean client restart (cleanAuth: ${cleanAuth})...`);
+            if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
+            isStartingWhatsApp = false;
+            if (whatsappClient) {
+                try {
+                    await whatsappClient.destroy();
+                } catch (e: any) {
+                    console.warn("[WhatsApp] Error destroying client:", e?.message);
+                }
+                whatsappClient = null;
             }
-            whatsappClient = null;
-        }
-        killOrphanedChromeProcesses();
-        cleanAllChromiumLocks();
-        // Allow operating system and Docker volume mount 2 seconds to release file handles
-        await new Promise(r => setTimeout(r, 2000));
+            killOrphanedChromeProcesses();
+            cleanAllChromiumLocks();
+            // Allow operating system and Docker volume mount 2 seconds to release file handles
+            await new Promise(r => setTimeout(r, 2000));
 
-        if (cleanAuth) {
-            const authPath = path.join(process.cwd(), '.wwebjs_auth');
-            try {
-                fs.rmSync(authPath, { recursive: true, force: true });
-                console.log("[WhatsApp] Wiped stale .wwebjs_auth directory.");
-            } catch (e) {}
-            hasSavedSession = false;
-            saveConfigToDisk();
-            await new Promise(r => setTimeout(r, 1000));
+            if (cleanAuth) {
+                const authPath = path.join(process.cwd(), '.wwebjs_auth');
+                try {
+                    fs.rmSync(authPath, { recursive: true, force: true });
+                    console.log("[WhatsApp] Wiped stale .wwebjs_auth directory.");
+                } catch (e) {}
+                hasSavedSession = false;
+                saveConfigToDisk();
+                await new Promise(r => setTimeout(r, 1000));
+            }
+            qrCodeDataUrl = null;
+            lastQrTimestamp = 0;
+            return await startWhatsappClient();
+        } finally {
+            isRestartingWhatsApp = false;
         }
-        qrCodeDataUrl = null;
-        lastQrTimestamp = 0;
-        return startWhatsappClient();
     }
 
     // Dedicated Unified WhatsApp Live QR Synchronizer & Watchdog
