@@ -2896,25 +2896,36 @@ async function startServer() {
         }
     });
 
+    app.post('/api/debug/wa-eval', express.json(), async (req, res) => {
+        try {
+            if (!whatsappClient?.pupPage) return res.status(500).json({ error: "No pupPage" });
+            const script = req.body?.script;
+            if (!script) return res.status(400).json({ error: "No script provided" });
+            const result = await whatsappClient.pupPage.evaluate(async (s: string) => {
+                const fn = new Function('return (async () => { ' + s + ' })()');
+                return await fn();
+            }, script);
+            return res.json({ result });
+        } catch (e: any) {
+            return res.status(500).json({ error: e.message, stack: e.stack });
+        }
+    });
+
     app.get('/api/debug/wa-click-modal', async (req, res) => {
         try {
             if (!whatsappClient?.pupPage) return res.status(500).send("No pupPage available");
             const result = await whatsappClient.pupPage.evaluate(() => {
-                const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
-                const btn = buttons.find((b: any) => 
-                    b.innerText?.includes('متابعة') || 
-                    b.innerText?.includes('Continue') || 
-                    b.getAttribute('aria-label')?.includes('Close') ||
-                    b.getAttribute('aria-label')?.includes('إغلاق') ||
-                    b.querySelector('[data-icon="x"]')
-                );
-                if (btn) {
-                    (btn as any).click();
-                    return "Clicked button: " + ((btn as any).innerText || "close");
+                try {
+                    const dm = (window as any).require('WAWebDownloadManager');
+                    return {
+                        keys: Object.keys(dm || {}),
+                        fnStr: dm?.downloadAndMaybeDecrypt?.toString()?.substring(0, 500)
+                    };
+                } catch (e: any) {
+                    return { error: e.message };
                 }
-                return "No modal button found";
             });
-            return res.send(result);
+            return res.json(result);
         } catch (e: any) {
             return res.status(500).send(e.message);
         }
