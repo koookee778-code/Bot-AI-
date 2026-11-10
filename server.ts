@@ -1873,6 +1873,15 @@ function syncVolumeToLocal() {
     }
 }
 
+let syncVolumeTimer: NodeJS.Timeout | null = null;
+function syncLocalToVolumeDebounced(delayMs = 15000) {
+    if (process.platform === 'win32') return;
+    if (syncVolumeTimer) clearTimeout(syncVolumeTimer);
+    syncVolumeTimer = setTimeout(() => {
+        syncLocalToVolume();
+    }, delayMs);
+}
+
 function syncLocalToVolume() {
     if (process.platform === 'win32') return;
     try {
@@ -1882,8 +1891,10 @@ function syncLocalToVolume() {
                 if (!fs.existsSync(persistentVolumePath)) {
                     fs.mkdirSync(persistentVolumePath, { recursive: true });
                 }
-                try { execSync(`find "${localSessionPath}" -name "Singleton*" -delete || true`); } catch {}
+                // Copy session to persistent volume, preserving local active files
                 execSync(`cp -rf "${localSessionPath}"/* "${persistentVolumePath}/" 2>/dev/null || true`);
+                // ONLY strip Singleton lock files from the destination volume copy, NEVER touch the active local runtime files!
+                try { execSync(`find "${persistentVolumePath}" -name "Singleton*" -delete || true`); } catch {}
                 console.log("[WhatsApp Auth Bridge] Successfully synced native local session to Railway volume!");
             }
         }
@@ -2152,7 +2163,6 @@ async function startServer() {
                 isWhatsappConnected = true;
                 qrCodeDataUrl = null;
                 saveConfigToDisk();
-                syncLocalToVolume();
                 updateBotState({ qr_code: null, is_connected: true }).catch(() => {});
                 io.emit('whatsapp-status', { 
                     connected: true, 
@@ -2167,10 +2177,8 @@ async function startServer() {
                 hasSavedSession = true;
                 isWhatsappConnected = true;
                 qrCodeDataUrl = null;
-                if (whatsappClient?.pupPage) attachPageListeners(whatsappClient.pupPage);
-                if (whatsappClient?.pupBrowser) attachBrowserListeners(whatsappClient.pupBrowser);
                 saveConfigToDisk();
-                syncLocalToVolume();
+                syncLocalToVolumeDebounced(15000);
                 updateBotState({ qr_code: null, is_connected: true, phone_number: whatsappClient?.info?.wid?.user }).catch(() => {});
                 io.emit('whatsapp-status', { 
                     connected: true, 
@@ -2221,7 +2229,6 @@ async function startServer() {
                     console.log("[WhatsApp] User logged out from mobile device. Clearing permanent session.");
                     hasSavedSession = false;
                     saveConfigToDisk();
-                syncLocalToVolume();
                     const authPath = path.resolve(__dirname, '.wwebjs_auth');
                     try {
                         if (fs.existsSync(authPath)) {
@@ -2594,7 +2601,6 @@ async function startServer() {
                                 botName = newName;
                                 await updateBotConfig({ bot_name: newName });
                                 saveConfigToDisk();
-                syncLocalToVolume();
                                 const replyMsg = `تم تغيير اسمي رسمياً إلى "${newName}" وحفظه سحابياً في Supabase بنجاح! سأعرّف نفسي بهذا الاسم من الآن فصاعداً في كل المحادثات 🌟\u200B`;
                                 await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
                                 return;
@@ -2607,7 +2613,6 @@ async function startServer() {
                             if (match && match[1] && match[1].trim()) {
                                 globalInstructions = match[1].trim();
                                 saveConfigToDisk();
-                syncLocalToVolume();
                                 await updateBotConfig({ system_prompt: globalInstructions });
                                 io.emit('config', { adminNumber, globalInstructions, botName, teamGroupId });
                                 const replyMsg = `تم حفظ وتحديث تعليمات الرد الجديدة بنجاح في قاعدة بيانات Supabase ✔️\u200B`;
@@ -3003,7 +3008,6 @@ ${noticeBody}
                     const healthPromise = whatsappClient.pupPage.evaluate(() => typeof (window as any).WWebJS !== 'undefined');
                     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Liveness check timed out (5s)')), 5000));
                     await Promise.race([healthPromise, timeoutPromise]);
-                    syncLocalToVolume();
                 } catch (healthErr: any) {
                     console.warn("[WhatsApp Session Health Check Failed - Browser stalled/crashed!]:", healthErr?.message || healthErr);
                     isWhatsappConnected = false;
@@ -5030,6 +5034,7 @@ _المساعد الذكي "سارة" بدأ التواصل التلقائي م�
         if (persistentBrowser) {
             try { await persistentBrowser.close(); } catch (e) {}
         }
+        syncLocalToVolume();
         process.exit(0);
     };
 
