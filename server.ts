@@ -1799,7 +1799,7 @@ async function startServer() {
                 },
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-                    headless: true,
+                    headless: process.env.HEADLESS === 'true' ? true : (process.platform === 'win32' ? false : true),
                     protocolTimeout: 300000,
                     ignoreDefaultArgs: ['--enable-automation'],
                     args: [
@@ -2637,7 +2637,10 @@ async function startServer() {
                     try {
                         let verifiedWid: string | null = null;
                         try {
-                            const numId = await whatsappClient.getNumberId(cleanNumber);
+                            const numId: any = await Promise.race([
+                                whatsappClient.getNumberId(cleanNumber),
+                                new Promise((_, r) => setTimeout(() => r(null), 6000))
+                            ]);
                             if (numId && (numId as any)._serialized) {
                                 verifiedWid = (numId as any)._serialized;
                             }
@@ -3919,7 +3922,10 @@ async function startServer() {
                     try {
                         let verifiedWid: string | null = null;
                         try {
-                            const numId = await whatsappClient.getNumberId(cleanPhone);
+                            const numId: any = await Promise.race([
+                                whatsappClient.getNumberId(cleanPhone),
+                                new Promise((_, r) => setTimeout(() => r(null), 6000))
+                            ]);
                             if (numId && (numId as any)._serialized) {
                                 verifiedWid = (numId as any)._serialized;
                             }
