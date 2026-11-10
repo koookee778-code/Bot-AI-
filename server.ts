@@ -2082,60 +2082,62 @@ async function startServer() {
                     const reply = await callGroqLLM(sessionKey, activeUserMessage, isFromAdmin, realPhoneNumber || chatUser);
 
                     if (reply && whatsappClient) {
-                        console.log(`[WhatsApp] Sending reply to ${conversationId}`);
-                        let sent = false;
-                        
-                        // Delivery Attempt 1: Direct msg.reply()
-                        try {
-                            if (typeof msg.reply === 'function') {
-                                await msg.reply(reply + "\u200B");
-                                sent = true;
-                            }
-                        } catch (replyErr: any) {
-                            console.warn("[WhatsApp] msg.reply failed, trying sendMessage:", replyErr?.message);
-                        }
-
-                        // Delivery Attempt 2: whatsappClient.sendMessage(conversationId)
-                        if (!sent) {
-                            try {
-                                await whatsappClient.sendMessage(conversationId, reply + "\u200B");
-                                sent = true;
-                            } catch (clientErr: any) {
-                                console.error("[WhatsApp] sendMessage(conversationId) failed:", clientErr?.message);
-                            }
-                        }
-
-                        // Delivery Attempt 3: If target is LID and earlier attempts failed, send to fromStr directly
-                        if (!sent && fromStr) {
-                            try {
-                                await whatsappClient.sendMessage(fromStr, reply + "\u200B");
-                                sent = true;
-                            } catch {}
-                        }
-
-                        // Voice Reply (if user sent voice, requested voice, or ENABLE_VOICE_REPLIES is true)
                         const userRequestedVoice = isVoiceOrAudio || /رد.*صوت|ابعت.*فويس|اتكلم.*صوت|عايز.*صوت|سجل.*صوت|رد.*تسجيل/i.test(activeUserMessage);
-                        if ((userRequestedVoice || process.env.ENABLE_VOICE_REPLIES === 'true') && reply) {
+                        const shouldSendVoice = userRequestedVoice || process.env.ENABLE_VOICE_REPLIES === 'true';
+
+                        if (shouldSendVoice) {
+                            // Voice-only reply requested: Send Lulwa voice note directly without any text message
                             try {
-                                console.log(`[WhatsApp Voice] Generating Lulwa voice reply for ${conversationId}...`);
+                                console.log(`[WhatsApp Voice] Generating Lulwa voice-only reply for ${conversationId}...`);
                                 const { oggBuffer } = await generateVoiceAudio(reply, 'lulwa');
                                 const voiceMedia = new MessageMedia('audio/ogg; codecs=opus', oggBuffer.toString('base64'), 'voice.ogg');
                                 
-                                let voiceSent = false;
                                 try {
                                     await whatsappClient.sendMessage(conversationId, voiceMedia, { sendAudioAsVoice: true });
-                                    voiceSent = true;
-                                    console.log(`[WhatsApp Voice] Sent voice reply successfully to ${conversationId}!`);
+                                    console.log(`[WhatsApp Voice] Sent voice-only reply successfully to ${conversationId}!`);
                                 } catch (vSendErr: any) {
                                     console.warn("[WhatsApp Voice] Direct send failed, trying fromStr fallback:", vSendErr?.message || vSendErr);
                                     if (fromStr && fromStr !== conversationId) {
                                         await whatsappClient.sendMessage(fromStr, voiceMedia, { sendAudioAsVoice: true });
-                                        voiceSent = true;
                                         console.log(`[WhatsApp Voice] Sent voice reply successfully via fallback to ${fromStr}!`);
                                     }
                                 }
                             } catch (vErr: any) {
                                 console.warn("[WhatsApp Voice Send Warning]:", vErr?.message || vErr);
+                                // Fallback to text only if voice generation completely failed
+                                await whatsappClient.sendMessage(conversationId, reply + "\u200B").catch(() => {});
+                            }
+                        } else {
+                            // Standard Text reply
+                            console.log(`[WhatsApp] Sending reply to ${conversationId}`);
+                            let sent = false;
+                            
+                            // Delivery Attempt 1: Direct msg.reply()
+                            try {
+                                if (typeof msg.reply === 'function') {
+                                    await msg.reply(reply + "\u200B");
+                                    sent = true;
+                                }
+                            } catch (replyErr: any) {
+                                console.warn("[WhatsApp] msg.reply failed, trying sendMessage:", replyErr?.message);
+                            }
+
+                            // Delivery Attempt 2: whatsappClient.sendMessage(conversationId)
+                            if (!sent) {
+                                try {
+                                    await whatsappClient.sendMessage(conversationId, reply + "\u200B");
+                                    sent = true;
+                                } catch (clientErr: any) {
+                                    console.error("[WhatsApp] sendMessage(conversationId) failed:", clientErr?.message);
+                                }
+                            }
+
+                            // Delivery Attempt 3: If target is LID and earlier attempts failed, send to fromStr directly
+                            if (!sent && fromStr) {
+                                try {
+                                    await whatsappClient.sendMessage(fromStr, reply + "\u200B");
+                                    sent = true;
+                                } catch {}
                             }
                         }
                     }
