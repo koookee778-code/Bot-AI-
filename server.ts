@@ -2036,6 +2036,7 @@ async function startServer() {
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
                     headless: process.env.HEADLESS === 'true' ? true : (process.platform === 'win32' ? false : true),
+                    protocolTimeout: 60000,
                     args: [
                         '--no-sandbox', 
                         '--disable-setuid-sandbox',
@@ -2141,7 +2142,10 @@ async function startServer() {
                     console.log("[WhatsApp] User logged out from mobile device. Clearing permanent session.");
                     hasSavedSession = false;
                     saveConfigToDisk();
+                    const authPath = path.join(process.cwd(), '.wwebjs_auth');
+                    try { fs.rmSync(authPath, { recursive: true, force: true }); } catch {}
                     cleanAllChromiumLocks();
+                    scheduleReconnect(3000);
                 } else {
                     // Temporary disconnection (network, browser refresh, timeout) -> Auto Reconnect permanently!
                     console.log("[WhatsApp] Temporary disconnection. Reconnecting in background to maintain permanent link...");
@@ -2931,48 +2935,80 @@ ${noticeBody}
         return startWhatsappClient();
     }
 
-    // Dedicated Live QR Code Renewal Engine & Live DOM Poller
+    // Dedicated Unified WhatsApp Live QR Synchronizer & Watchdog
     let lastKnownQrRef: string = '';
+    let isEvaluatingPuppeteer = false;
 
-    async function syncQrFromDom() {
+    async function syncQrAndHandleOverlays(reason = 'watchdog') {
         if (isWhatsappConnected || !whatsappClient?.pupPage || whatsappClient.pupPage.isClosed?.()) return;
-        try {
-            const domInfo = await whatsappClient.pupPage.evaluate(() => {
-                const qrEl = document.querySelector('div[data-ref]');
-                const rawRef = qrEl ? qrEl.getAttribute('data-ref') : null;
+        if (isEvaluatingPuppeteer) return; // Prevent concurrent CDP message collisions
+        isEvaluatingPuppeteer = true;
 
-                const qrBox = document.querySelector('[data-testid="link-device-qr-code"]') || qrEl;
-                const allElements = Array.from(document.querySelectorAll('*'));
-                const hasReload = !!(
-                    allElements.some((el: any) => 
+        try {
+            const result = await whatsappClient.pupPage.evaluate(() => {
+                try {
+                    // 1. Auto-dismiss "What's New in WhatsApp Web" or promotional popups
+                    const dismissBtns = Array.from(document.querySelectorAll('button, div[role="button"]')).filter((b: any) => 
+                        b.innerText?.includes('متابعة') || 
+                        b.innerText?.includes('Continue') || 
+                        b.getAttribute('aria-label')?.includes('Close') ||
+                        b.getAttribute('aria-label')?.includes('إغلاق') ||
+                        b.querySelector('[data-icon="x"]')
+                    );
+                    for (const btn of dismissBtns) {
+                        try { (btn as HTMLElement).click(); } catch {}
+                    }
+
+                    // 2. Read live data-ref attribute
+                    const qrEl = document.querySelector('div[data-ref]');
+                    const rawRef = qrEl ? qrEl.getAttribute('data-ref') : null;
+
+                    // 3. Detect and click reload overlay if QR expired or needs reload
+                    const qrBox = document.querySelector('[data-testid="link-device-qr-code"]') || qrEl;
+                    let clickedReload = false;
+
+                    const allElements = Array.from(document.querySelectorAll('*'));
+                    const reloadBtn = allElements.find((el: any) => 
                         el.innerText && (
                             el.innerText.includes('reload') || 
                             el.innerText.includes('Reload') || 
-                            el.innerText.includes('إعادة تحميل')
+                            el.innerText.includes('إعادة تحميل') ||
+                            el.innerText.includes('تحميل')
                         )
-                    ) ||
-                    (qrBox && (qrBox.querySelector('[role="button"]') || qrBox.querySelector('button')))
-                );
+                    ) || (qrBox ? (qrBox.querySelector('[role="button"]') || qrBox.querySelector('button') || qrBox.querySelector('span')) : null);
 
-                return { rawRef, hasReload };
+                    if (reloadBtn) {
+                        (reloadBtn as HTMLElement).click();
+                        clickedReload = true;
+                    } else if (qrBox && !rawRef) {
+                        // Click container if no QR ref is currently mounted
+                        (qrBox as HTMLElement).click();
+                        clickedReload = true;
+                    }
+
+                    return { rawRef, clickedReload };
+                } catch (e: any) {
+                    return { error: e?.message || String(e) };
+                }
             });
 
-            if (!domInfo) return;
+            if (!result || (result as any).error) return;
 
-            if (domInfo.hasReload) {
-                console.log("[WhatsApp QR Watchdog] WhatsApp Web reload button detected in DOM. Auto-clicking...");
-                triggerQrRefresh('dom_reload_overlay_detected').catch(() => {});
+            const { rawRef, clickedReload } = result as any;
+
+            if (clickedReload) {
+                console.log(`[WhatsApp QR Watchdog] WhatsApp Web reload overlay clicked (${reason}).`);
             }
 
-            if (domInfo.rawRef && domInfo.rawRef !== lastKnownQrRef) {
-                lastKnownQrRef = domInfo.rawRef;
+            if (rawRef && rawRef !== lastKnownQrRef) {
+                lastKnownQrRef = rawRef;
                 lastQrTimestamp = Date.now();
-                const qrPayload = domInfo.rawRef.includes('#') ? domInfo.rawRef.split('#')[1] : domInfo.rawRef;
+                const qrPayload = rawRef.includes('#') ? rawRef.split('#')[1] : rawRef;
                 console.log(`[WhatsApp QR Watchdog] Extracted fresh live QR code from DOM data-ref at ${new Date().toLocaleTimeString()}!`);
-                
+
                 qrCodeDataUrl = await QRCode.toDataURL(qrPayload, { margin: 2, scale: 8 });
                 isWhatsappConnected = false;
-                
+
                 io.emit('whatsapp-status', {
                     connected: false,
                     qr: qrCodeDataUrl,
@@ -2984,101 +3020,41 @@ ${noticeBody}
 
                 updateBotState({ qr_code: qrCodeDataUrl, is_connected: false }).catch(() => {});
             }
-        } catch {}
+        } catch (evalErr: any) {
+            // Ignore transient evaluate drops
+        } finally {
+            isEvaluatingPuppeteer = false;
+        }
     }
 
-    // High-frequency watchdog (every 2.5 seconds) ensuring QR codes stay live and never frozen
+    // High-frequency watchdog (every 3 seconds) ensuring QR codes stay live and never frozen
     setInterval(async () => {
         if (!isWhatsappConnected && whatsappClient && !isStartingWhatsApp) {
-            await syncQrFromDom();
+            await syncQrAndHandleOverlays('periodic_watchdog');
 
             const ageSec = lastQrTimestamp > 0 ? (Date.now() - lastQrTimestamp) / 1000 : 999;
-            if (ageSec > 22 && ageSec < 85) {
-                triggerQrRefresh('watchdog_age_expiry').catch(() => {});
-            } else if (ageSec >= 85 && lastClientStartTime > 0 && (Date.now() - lastClientStartTime) > 85000) {
+            if (ageSec >= 80 && lastClientStartTime > 0 && (Date.now() - lastClientStartTime) > 80000) {
                 console.warn(`[WhatsApp QR Watchdog] QR code stalled for ${Math.round(ageSec)}s. Auto-restarting client...`);
                 restartWhatsappClient(false).catch(() => {});
             }
         }
-    }, 2500);
+    }, 3000);
 
     async function triggerQrRefresh(reason = 'manual') {
         const now = Date.now();
         if (isWhatsappConnected) return;
-        // Don't interrupt client within its first 15 seconds of starting up
-        if (now - lastClientStartTime < 15000) return;
-        if (now - lastRefreshAttempt < 2500) return; // Throttle to max once every 2.5 seconds
+        if (now - lastClientStartTime < 10000) return;
+        if (now - lastRefreshAttempt < 2000) return;
         lastRefreshAttempt = now;
 
         if (!whatsappClient) {
             if (!isStartingWhatsApp) {
-                console.log(`[WhatsApp QR Refresh] Client offline, launching startup (${reason})...`);
                 startWhatsappClient().catch(() => {});
             }
             return;
         }
 
-        const pupPage = (whatsappClient as any).pupPage;
-        if (!pupPage || typeof pupPage.evaluate !== 'function' || pupPage.isClosed?.()) {
-            console.log(`[WhatsApp QR Refresh] pupPage not ready or closed (${reason}).`);
-            if (now - lastClientStartTime > 40000) {
-                restartWhatsappClient().catch(() => {});
-            }
-            return;
-        }
-
-        console.log(`[WhatsApp QR Refresh] Triggering live QR renewal (Reason: ${reason})...`);
-
-        try {
-            // Click WhatsApp Web reload button or click QR box
-            const refreshAction = pupPage.evaluate(() => {
-                try {
-                    // 1. WhatsApp Web AuthStore or Store command
-                    if ((window as any).Store?.Cmd?.refreshQR) {
-                        (window as any).Store.Cmd.refreshQR();
-                        return 'Store.Cmd.refreshQR';
-                    }
-                    if ((window as any).AuthStore?.Cmd?.refreshQR) {
-                        (window as any).AuthStore.Cmd.refreshQR();
-                        return 'AuthStore.Cmd.refreshQR';
-                    }
-
-                    // 2. Click WhatsApp Web's reload overlay button or QR container
-                    const qrBox = document.querySelector('[data-testid="link-device-qr-code"]') || document.querySelector('div[data-ref]');
-                    const allEls = Array.from(document.querySelectorAll('*'));
-                    const reloadBtn = allEls.find((el: any) => 
-                        el.innerText && (
-                            el.innerText.includes('reload') || 
-                            el.innerText.includes('Reload') || 
-                            el.innerText.includes('إعادة تحميل') ||
-                            el.innerText.includes('تحميل')
-                        )
-                    ) || document.querySelector('button[aria-label*="reload" i]')
-                      || document.querySelector('span[data-icon="refresh"]')
-                      || (qrBox ? (qrBox.querySelector('[role="button"]') || qrBox.querySelector('span') || qrBox.querySelector('button') || qrBox.querySelector('canvas')) : null);
-
-                    if (reloadBtn) {
-                        (reloadBtn as HTMLElement).click();
-                        return 'clicked_reload_btn';
-                    }
-
-                    if (qrBox) {
-                        (qrBox as HTMLElement).click();
-                        return 'clicked_qrBox';
-                    }
-
-                    return 'none_found';
-                } catch (e: any) {
-                    return 'eval_err: ' + (e?.message || e);
-                }
-            });
-
-            const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve('timeout'), 3500));
-            const result = await Promise.race([refreshAction, timeoutPromise]);
-            console.log(`[WhatsApp QR Refresh] Action result (${reason}):`, result);
-        } catch (err: any) {
-            console.warn("[WhatsApp QR Refresh] Refresh exception:", err?.message || err);
-        }
+        await syncQrAndHandleOverlays(reason);
     }
 
     app.post(['/api/whatsapp/refresh-qr', '/api/whatsapp/refresh'], async (req, res) => {
@@ -3513,25 +3489,13 @@ _المساعد الذكي "سارة" بدأ التواصل التلقائي م�
             startWhatsappClient().catch(() => {});
         }
 
-        // Auto-dismiss "What's New in WhatsApp Web" / "الجديد في واتساب ويب" popup if blocking the screen
-        if (!isWhatsappConnected && whatsappClient?.pupPage) {
-            whatsappClient.pupPage.evaluate(() => {
-                const btn = Array.from(document.querySelectorAll('button, div[role="button"]')).find((b: any) => 
-                    b.innerText?.includes('متابعة') || 
-                    b.innerText?.includes('Continue') || 
-                    b.getAttribute('aria-label')?.includes('Close') ||
-                    b.getAttribute('aria-label')?.includes('إغلاق') ||
-                    b.querySelector('[data-icon="x"]')
-                );
-                if (btn) (btn as any).click();
-            }).catch(() => {});
-        }
-
         const ageSec = lastQrTimestamp > 0 ? Math.round((now - lastQrTimestamp) / 1000) : 999;
         
-        // If QR code is older than 20 seconds, trigger renewal in background
+        // If QR code is older than 20 seconds, trigger renewal in background without blocking HTTP
         if (!isWhatsappConnected && whatsappClient && ageSec > 20) {
-            triggerQrRefresh('api_status_check').catch(() => {});
+            setImmediate(() => {
+                triggerQrRefresh('api_status_check').catch(() => {});
+            });
         }
 
         res.json({ 
