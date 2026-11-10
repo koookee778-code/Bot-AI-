@@ -2107,6 +2107,7 @@ async function startServer() {
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
                     headless: process.env.HEADLESS === 'true' ? true : (process.platform === 'win32' ? false : true),
+                    dumpio: true,
                     protocolTimeout: 60000,
                     args: [
                         '--no-sandbox', 
@@ -2115,6 +2116,8 @@ async function startServer() {
                         '--disable-accelerated-2d-canvas',
                         '--no-first-run',
                         '--disable-gpu',
+                        '--disable-software-rasterizer',
+                        '--mute-audio',
                         '--disable-background-timer-throttling',
                         '--disable-backgrounding-occluded-windows',
                         '--disable-renderer-backgrounding'

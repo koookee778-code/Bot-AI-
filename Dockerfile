@@ -15,6 +15,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     libatk-bridge2.0-0 \
     libgtk-3-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libxfixes3 \
+    libxss1 \
+    libxtst6 \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure environment for Puppeteer to use the installed Chromium
