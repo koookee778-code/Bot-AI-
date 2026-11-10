@@ -2060,20 +2060,10 @@ async function startServer() {
         if (!page || page._antigravityAttached) return;
         page._antigravityAttached = true;
         page.on('error', (err: any) => {
-            if (isRestartingWhatsApp) return;
-            console.error("[WhatsApp Page Crash Detected!]:", err?.message || err);
-            isWhatsappConnected = false;
-            setTimeout(() => {
-                restartWhatsappClient(false).catch(() => {});
-            }, 3000);
+            console.warn("[WhatsApp Page Error Event Handled]:", err?.message || err);
         });
         page.on('close', () => {
-            if (isRestartingWhatsApp || !isWhatsappConnected) return;
-            console.warn("[WhatsApp Page Closed unexpectedly!]");
-            isWhatsappConnected = false;
-            setTimeout(() => {
-                restartWhatsappClient(false).catch(() => {});
-            }, 3000);
+            console.warn("[WhatsApp Page Closed Event Handled]");
         });
     };
 
@@ -2081,12 +2071,7 @@ async function startServer() {
         if (!browser || browser._antigravityAttached) return;
         browser._antigravityAttached = true;
         browser.on('disconnected', () => {
-            if (isRestartingWhatsApp || !isWhatsappConnected) return;
-            console.warn("[WhatsApp PupBrowser Disconnected unexpectedly!]");
-            isWhatsappConnected = false;
-            setTimeout(() => {
-                restartWhatsappClient(false).catch(() => {});
-            }, 3000);
+            console.warn("[WhatsApp PupBrowser Disconnected Event Handled]");
         });
     };
 
@@ -2129,7 +2114,6 @@ async function startServer() {
                         '--disable-dev-shm-usage',
                         '--disable-accelerated-2d-canvas',
                         '--no-first-run',
-                        '--no-zygote',
                         '--disable-gpu',
                         '--disable-background-timer-throttling',
                         '--disable-backgrounding-occluded-windows',
@@ -3000,18 +2984,17 @@ ${noticeBody}
         }
 
         // Periodic Session Liveness Watchdog (every 25 seconds)
-        if (isWhatsappConnected && whatsappClient?.pupPage && !whatsappClient.pupPage.isClosed?.() && !isStartingWhatsApp) {
+        if (isWhatsappConnected && whatsappClient && !isStartingWhatsApp) {
             const now = Date.now();
-            if (now - lastHealthCheckTime > 25000) {
+            if (now - lastHealthCheckTime > 30000) {
                 lastHealthCheckTime = now;
                 try {
-                    const healthPromise = whatsappClient.pupPage.evaluate(() => typeof (window as any).WWebJS !== 'undefined');
-                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Liveness check timed out (5s)')), 5000));
-                    await Promise.race([healthPromise, timeoutPromise]);
+                    const state = await whatsappClient.getState().catch(() => null);
+                    if (state && state !== 'CONNECTED') {
+                        console.warn(`[WhatsApp Session Health Check]: State is ${state}`);
+                    }
                 } catch (healthErr: any) {
-                    console.warn("[WhatsApp Session Health Check Failed - Browser stalled/crashed!]:", healthErr?.message || healthErr);
-                    isWhatsappConnected = false;
-                    restartWhatsappClient(false).catch(() => {});
+                    console.warn("[WhatsApp Session Health Check Warning]:", healthErr?.message || healthErr);
                 }
             }
         }
@@ -3082,7 +3065,7 @@ ${noticeBody}
     let isEvaluatingPuppeteer = false;
 
     async function syncQrAndHandleOverlays(reason = 'watchdog') {
-        if (isWhatsappConnected || !whatsappClient?.pupPage || whatsappClient.pupPage.isClosed?.()) return;
+        if (isWhatsappConnected || hasSavedSession || !whatsappClient?.pupPage || whatsappClient.pupPage.isClosed?.()) return;
         if (isEvaluatingPuppeteer) return; // Prevent concurrent CDP message collisions
         isEvaluatingPuppeteer = true;
 
@@ -3105,26 +3088,18 @@ ${noticeBody}
                     const qrEl = document.querySelector('div[data-ref]');
                     const rawRef = qrEl ? qrEl.getAttribute('data-ref') : null;
 
-                    // 3. Detect and click reload overlay if QR expired or needs reload
+                    // 3. Detect and click reload overlay ONLY if inside QR container
                     const qrBox = document.querySelector('[data-testid="link-device-qr-code"]') || qrEl;
                     let clickedReload = false;
 
-                    const allElements = Array.from(document.querySelectorAll('*'));
-                    const reloadBtn = allElements.find((el: any) => 
-                        el.innerText && (
-                            el.innerText.includes('reload') || 
-                            el.innerText.includes('Reload') || 
-                            el.innerText.includes('إعادة تحميل') ||
-                            el.innerText.includes('تحميل')
-                        )
-                    ) || (qrBox ? (qrBox.querySelector('[role="button"]') || qrBox.querySelector('button') || qrBox.querySelector('span')) : null);
+                    const reloadBtn = qrBox ? (
+                        qrBox.querySelector('[role="button"]') || 
+                        qrBox.querySelector('button') || 
+                        qrBox.querySelector('span')
+                    ) : null;
 
                     if (reloadBtn) {
                         (reloadBtn as HTMLElement).click();
-                        clickedReload = true;
-                    } else if (qrBox && !rawRef) {
-                        // Click container if no QR ref is currently mounted
-                        (qrBox as HTMLElement).click();
                         clickedReload = true;
                     }
 
@@ -3171,7 +3146,7 @@ ${noticeBody}
 
     // High-frequency watchdog (every 3 seconds) ensuring QR codes stay live and never frozen
     setInterval(async () => {
-        if (!isWhatsappConnected && whatsappClient && !isStartingWhatsApp) {
+        if (!isWhatsappConnected && !hasSavedSession && whatsappClient && !isStartingWhatsApp) {
             await syncQrAndHandleOverlays('periodic_watchdog');
 
             const ageSec = lastQrTimestamp > 0 ? (Date.now() - lastQrTimestamp) / 1000 : 999;
