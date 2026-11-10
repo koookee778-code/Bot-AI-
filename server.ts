@@ -2106,7 +2106,13 @@ async function startServer() {
         if (!page || page._antigravityAttached) return;
         page._antigravityAttached = true;
         page.on('error', (err: any) => {
-            console.warn("[WhatsApp Page Error Event Handled]:", err?.message || err);
+            const msg = String(err?.message || err);
+            console.warn("[WhatsApp Page Error Event Handled]:", msg);
+            if (msg.includes('Page crashed') || msg.includes('Target closed') || msg.includes('Session closed')) {
+                console.warn("[WhatsApp Auto-Recovery] Page/Target crash detected. Scheduling client restart...");
+                isWhatsappConnected = false;
+                scheduleReconnect(3000);
+            }
         });
         page.on('close', () => {
             console.warn("[WhatsApp Page Closed Event Handled]");
@@ -2150,6 +2156,20 @@ async function startServer() {
                     clientId: "client-one",
                     dataPath: localSessionPath
                 }),
+                evalOnNewDoc: () => {
+                    try {
+                        const noopPromise = () => Promise.reject(new Error('Media disabled'));
+                        if (typeof navigator !== 'undefined' && (navigator as any).mediaDevices) {
+                            (navigator as any).mediaDevices.getUserMedia = noopPromise;
+                            (navigator as any).mediaDevices.getDisplayMedia = noopPromise;
+                            (navigator as any).mediaDevices.enumerateDevices = async () => [];
+                        }
+                        try { Object.defineProperty(window, 'RTCPeerConnection', { value: undefined, writable: false }); } catch {}
+                        try { Object.defineProperty(window, 'webkitRTCPeerConnection', { value: undefined, writable: false }); } catch {}
+                        try { Object.defineProperty(window, 'RTCSessionDescription', { value: undefined, writable: false }); } catch {}
+                        try { Object.defineProperty(window, 'RTCIceCandidate', { value: undefined, writable: false }); } catch {}
+                    } catch (e) {}
+                },
                 puppeteer: { 
                     executablePath: (process.platform !== 'win32' && fs.existsSync('/usr/bin/google-chrome-stable'))
                         ? '/usr/bin/google-chrome-stable'
@@ -2166,6 +2186,8 @@ async function startServer() {
                         '--disable-gpu',
                         '--disable-software-rasterizer',
                         '--mute-audio',
+                        '--use-fake-ui-for-media-stream',
+                        '--use-fake-device-for-media-stream',
                         '--disable-webrtc',
                         '--disable-webrtc-hw-encoding',
                         '--disable-webrtc-hw-decoding',
@@ -2173,7 +2195,7 @@ async function startServer() {
                         '--disable-video-capture',
                         '--disable-accelerated-video-decode',
                         '--disable-accelerated-video-encode',
-                        '--disable-features=WebRtcHideLocalIpsWithMdns,MediaStream,WebRTC,WebRtcAecTunnel',
+                        '--disable-features=WebRtcHideLocalIpsWithMdns,MediaStream,WebRTC,WebRtcAecTunnel,OpenH264,VaapiVideoEncoder,VaapiVideoDecoder,CastMediaRouteProvider',
                         '--disable-background-timer-throttling',
                         '--disable-backgrounding-occluded-windows',
                         '--disable-renderer-backgrounding'
