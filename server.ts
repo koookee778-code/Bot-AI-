@@ -1849,10 +1849,55 @@ const saveConfigToDisk = () => {
     }, null, 2)).catch(e => console.error("Could not save config:", e));
 };
 
+const persistentVolumePath = path.resolve(__dirname, '.wwebjs_auth');
+const localSessionPath = process.platform === 'win32' 
+    ? persistentVolumePath 
+    : path.resolve('/tmp', 'wwebjs_local');
+
+function syncVolumeToLocal() {
+    if (process.platform === 'win32') return;
+    try {
+        if (!fs.existsSync(localSessionPath)) {
+            fs.mkdirSync(localSessionPath, { recursive: true });
+        }
+        if (fs.existsSync(persistentVolumePath)) {
+            const hasVolumeSession = fs.existsSync(path.join(persistentVolumePath, 'session-client-one'));
+            if (hasVolumeSession) {
+                try { execSync(`find "${persistentVolumePath}" -name "Singleton*" -delete || true`); } catch {}
+                execSync(`cp -rf "${persistentVolumePath}"/* "${localSessionPath}/" 2>/dev/null || true`);
+                console.log("[WhatsApp Auth Bridge] Successfully loaded session from volume into native /tmp container storage!");
+            }
+        }
+    } catch (e: any) {
+        console.warn("[WhatsApp Auth Bridge] Warning during volume to local sync:", e?.message);
+    }
+}
+
+function syncLocalToVolume() {
+    if (process.platform === 'win32') return;
+    try {
+        if (fs.existsSync(localSessionPath)) {
+            const hasLocalSession = fs.existsSync(path.join(localSessionPath, 'session-client-one'));
+            if (hasLocalSession) {
+                if (!fs.existsSync(persistentVolumePath)) {
+                    fs.mkdirSync(persistentVolumePath, { recursive: true });
+                }
+                try { execSync(`find "${localSessionPath}" -name "Singleton*" -delete || true`); } catch {}
+                execSync(`cp -rf "${localSessionPath}"/* "${persistentVolumePath}/" 2>/dev/null || true`);
+                console.log("[WhatsApp Auth Bridge] Successfully synced native local session to Railway volume!");
+            }
+        }
+    } catch (e: any) {
+        console.warn("[WhatsApp Auth Bridge] Warning during local to volume sync:", e?.message);
+    }
+}
+
 // Multi-level lock and process cleanup helpers to prevent Puppeteer crashes on reload
 function cleanAllChromiumLocks() {
     try {
         const authDirs = [
+            persistentVolumePath,
+            localSessionPath,
             path.join(process.cwd(), '.wwebjs_auth'),
             path.join(__dirname, '.wwebjs_auth')
         ];
@@ -2051,19 +2096,17 @@ async function startServer() {
         try {
             console.log("[WhatsApp] Initializing WhatsApp permanent client...");
             
+            // Sync session from Railway volume into native /tmp container storage
+            syncVolumeToLocal();
+
             // Clean any stale locks and orphaned browser instances
             killOrphanedChromeProcesses();
             cleanAllChromiumLocks();
 
-            const authPath = path.resolve(__dirname, '.wwebjs_auth');
-            if (!fs.existsSync(authPath)) {
-                fs.mkdirSync(authPath, { recursive: true });
-            }
-
             whatsappClient = new Client({
                 authStrategy: new LocalAuth({ 
                     clientId: "client-one",
-                    dataPath: authPath
+                    dataPath: localSessionPath
                 }),
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
@@ -2109,6 +2152,7 @@ async function startServer() {
                 isWhatsappConnected = true;
                 qrCodeDataUrl = null;
                 saveConfigToDisk();
+                syncLocalToVolume();
                 updateBotState({ qr_code: null, is_connected: true }).catch(() => {});
                 io.emit('whatsapp-status', { 
                     connected: true, 
@@ -2126,6 +2170,7 @@ async function startServer() {
                 if (whatsappClient?.pupPage) attachPageListeners(whatsappClient.pupPage);
                 if (whatsappClient?.pupBrowser) attachBrowserListeners(whatsappClient.pupBrowser);
                 saveConfigToDisk();
+                syncLocalToVolume();
                 updateBotState({ qr_code: null, is_connected: true, phone_number: whatsappClient?.info?.wid?.user }).catch(() => {});
                 io.emit('whatsapp-status', { 
                     connected: true, 
@@ -2176,6 +2221,7 @@ async function startServer() {
                     console.log("[WhatsApp] User logged out from mobile device. Clearing permanent session.");
                     hasSavedSession = false;
                     saveConfigToDisk();
+                syncLocalToVolume();
                     const authPath = path.resolve(__dirname, '.wwebjs_auth');
                     try {
                         if (fs.existsSync(authPath)) {
@@ -2548,6 +2594,7 @@ async function startServer() {
                                 botName = newName;
                                 await updateBotConfig({ bot_name: newName });
                                 saveConfigToDisk();
+                syncLocalToVolume();
                                 const replyMsg = `تم تغيير اسمي رسمياً إلى "${newName}" وحفظه سحابياً في Supabase بنجاح! سأعرّف نفسي بهذا الاسم من الآن فصاعداً في كل المحادثات 🌟\u200B`;
                                 await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
                                 return;
@@ -2560,6 +2607,7 @@ async function startServer() {
                             if (match && match[1] && match[1].trim()) {
                                 globalInstructions = match[1].trim();
                                 saveConfigToDisk();
+                syncLocalToVolume();
                                 await updateBotConfig({ system_prompt: globalInstructions });
                                 io.emit('config', { adminNumber, globalInstructions, botName, teamGroupId });
                                 const replyMsg = `تم حفظ وتحديث تعليمات الرد الجديدة بنجاح في قاعدة بيانات Supabase ✔️\u200B`;
@@ -2940,7 +2988,7 @@ ${noticeBody}
 
     // Periodic watchdog (every 25 seconds) to ensure permanent connection remains active
     setInterval(async () => {
-        if (!whatsappClient && !isStartingWhatsApp && (hasSavedSession || fs.existsSync(path.join(process.cwd(), '.wwebjs_auth', 'session-client-one')))) {
+        if (!whatsappClient && !isStartingWhatsApp && (hasSavedSession || fs.existsSync(path.join(localSessionPath, 'session-client-one')) || fs.existsSync(path.join(persistentVolumePath, 'session-client-one')))) {
             console.log("[WhatsApp Watchdog] Session exists but client is offline. Auto-restoring connection...");
             startWhatsappClient().catch(() => {});
             return;
@@ -2955,6 +3003,7 @@ ${noticeBody}
                     const healthPromise = whatsappClient.pupPage.evaluate(() => typeof (window as any).WWebJS !== 'undefined');
                     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Liveness check timed out (5s)')), 5000));
                     await Promise.race([healthPromise, timeoutPromise]);
+                    syncLocalToVolume();
                 } catch (healthErr: any) {
                     console.warn("[WhatsApp Session Health Check Failed - Browser stalled/crashed!]:", healthErr?.message || healthErr);
                     isWhatsappConnected = false;
@@ -2965,7 +3014,7 @@ ${noticeBody}
     }, 25000);
 
     async function restartWhatsappClient(cleanAuth = false) {
-        if (isRestartingWhatsApp) {
+        if (isRestartingWhatsApp && !cleanAuth) {
             console.log("[WhatsApp] Restart already in progress, skipping duplicate call.");
             return;
         }
@@ -2988,13 +3037,18 @@ ${noticeBody}
             await new Promise(r => setTimeout(r, 2000));
 
             if (cleanAuth) {
-                const authPath = path.resolve(__dirname, '.wwebjs_auth');
                 try {
-                    if (fs.existsSync(authPath)) {
-                        const entries = fs.readdirSync(authPath);
+                    if (fs.existsSync(localSessionPath)) {
+                        fs.rmSync(localSessionPath, { recursive: true, force: true });
+                        console.log("[WhatsApp Cleanup] Wiped local session storage.");
+                    }
+                } catch {}
+                try {
+                    if (fs.existsSync(persistentVolumePath)) {
+                        const entries = fs.readdirSync(persistentVolumePath);
                         for (const entry of entries) {
                             try {
-                                fs.rmSync(path.join(authPath, entry), { recursive: true, force: true });
+                                fs.rmSync(path.join(persistentVolumePath, entry), { recursive: true, force: true });
                                 console.log(`[WhatsApp Cleanup] Removed: ${entry}`);
                             } catch (rmErr: any) {
                                 console.warn(`[WhatsApp Cleanup] Could not remove ${entry}:`, rmErr?.message);
@@ -3008,6 +3062,8 @@ ${noticeBody}
                 hasSavedSession = false;
                 saveConfigToDisk();
                 await new Promise(r => setTimeout(r, 1000));
+            } else {
+                syncLocalToVolume();
             }
             qrCodeDataUrl = null;
             lastQrTimestamp = 0;
