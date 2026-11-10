@@ -2255,7 +2255,7 @@ async function startServer() {
                 isStartingWhatsApp = false;
                 console.log("[WhatsApp] Client initialization completed successfully.");
                 
-                // Auto-dismiss any blocking WhatsApp Web dialogs & auto-detect chat pane
+                // Auto-dismiss any blocking WhatsApp Web dialogs & auto-trigger sync if missed
                 setInterval(async () => {
                     try {
                         const pup = (whatsappClient as any)?.pupPage;
@@ -2271,19 +2271,30 @@ async function startServer() {
                                 }
                             });
 
-                            if (!isWhatsappConnected) {
-                                const chatsLoaded = await pup.evaluate(() => {
-                                    return !!document.querySelector('#pane-side, div[role="row"], div[data-tab="3"]');
-                                });
-                                if (chatsLoaded) {
-                                    console.log("[WhatsApp] Chats pane detected on page. Marking WhatsApp as CONNECTED & READY!");
-                                    isWhatsappConnected = true;
-                                    hasSavedSession = true;
-                                    io.emit('whatsapp-status', { connected: true, qr: null, hasSavedSession: true, isReady: true });
+                            const syncState = await pup.evaluate(async () => {
+                                const w = window as any;
+                                const isPane = !!document.querySelector('#pane-side, div[role="row"]');
+                                const hasSynced = w.AuthStore?.AppState?.hasSynced;
+                                const missingStore = !w.Store || !w.WWebJS;
+                                
+                                if ((hasSynced || isPane) && missingStore && typeof w.onAppStateHasSyncedEvent === 'function') {
+                                    try {
+                                        await w.onAppStateHasSyncedEvent();
+                                        return 'triggered_sync';
+                                    } catch (err: any) {
+                                        return 'sync_error: ' + (err?.message || err);
+                                    }
                                 }
+                                return null;
+                            });
+
+                            if (syncState === 'triggered_sync') {
+                                console.log("[WhatsApp] Successfully triggered onAppStateHasSyncedEvent to expose Store & attach message listeners!");
                             }
                         }
-                    } catch {}
+                    } catch (e: any) {
+                        console.warn("[WhatsApp Auto-Sync Monitor Warning]:", e?.message || e);
+                    }
                 }, 3000);
             }).catch(err => {
                 if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
@@ -2897,13 +2908,46 @@ async function startServer() {
         }
     });
 
+    app.get('/api/debug/wa-trigger-sync', async (req, res) => {
+        try {
+            const pup = (whatsappClient as any)?.pupPage;
+            if (!pup) return res.json({ error: 'no pupPage' });
+            const syncResult = await pup.evaluate(async () => {
+                const w = window as any;
+                if (typeof w.onAppStateHasSyncedEvent === 'function') {
+                    try {
+                        await w.onAppStateHasSyncedEvent();
+                        return 'called_onAppStateHasSyncedEvent_success';
+                    } catch (e: any) {
+                        return 'called_with_error: ' + (e?.message || e);
+                    }
+                }
+                return 'no_onAppStateHasSyncedEvent';
+            });
+            res.json({ syncResult });
+        } catch (e: any) {
+            res.status(500).json({ error: e?.message });
+        }
+    });
+
     app.get('/api/debug/wa-info', async (req, res) => {
         try {
             if (!whatsappClient?.pupPage) return res.json({ error: 'no pupPage' });
             const pageUrl = await whatsappClient.pupPage.url();
             const title = await whatsappClient.pupPage.title();
             const text = await whatsappClient.pupPage.evaluate(() => document.body?.innerText?.substring(0, 300) || '');
-            res.json({ pageUrl, title, text, isWhatsappConnected });
+            const diagnostics = await whatsappClient.pupPage.evaluate(() => {
+                const w = window as any;
+                return {
+                    hasAuthStore: typeof w.AuthStore !== 'undefined',
+                    hasStore: typeof w.Store !== 'undefined',
+                    hasWWebJS: typeof w.WWebJS !== 'undefined',
+                    hasSynced: w.AuthStore?.AppState?.hasSynced,
+                    appState: w.AuthStore?.AppState?.state,
+                    hasPaneSide: !!document.querySelector('#pane-side')
+                };
+            });
+            res.json({ pageUrl, title, text, isWhatsappConnected, diagnostics });
         } catch (e: any) {
             res.status(500).json({ error: e?.message });
         }
