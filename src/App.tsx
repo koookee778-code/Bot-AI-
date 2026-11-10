@@ -2253,7 +2253,7 @@ notifyTexoraBot({
                         )}
                       </button>
                       <a 
-                        href="https://bot-service-production-712e.up.railway.app/qr" 
+                        href="/qr" 
                         target="_blank" 
                         rel="noreferrer"
                         className="bg-emerald-600 hover:bg-emerald-500 text-white py-3 px-6 rounded-xl transition flex justify-center items-center gap-2 font-bold text-xs shadow-md"

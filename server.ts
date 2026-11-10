@@ -959,22 +959,10 @@ async function executeTool(funcName: string, args: any, userId: string, isAdmin:
             if (rawTarget.length <= 10 && rawTarget.startsWith('1')) rawTarget = '20' + rawTarget;
             
             if (whatsappClient && isWhatsappConnected && rawTarget && rawTarget.length >= 8) {
-                let targetId = `${rawTarget}@c.us`;
-                try {
-                    const numberId = await Promise.race([
-                        whatsappClient.getNumberId(rawTarget),
-                        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
-                    ]);
-                    if (numberId && (numberId as any)._serialized) {
-                        targetId = (numberId as any)._serialized;
-                    } else if (numberId === null) {
-                        return `الرقم +${rawTarget} غير مسجل على واتساب.`;
-                    }
-                } catch (e) {}
-
+                const targetId = `${rawTarget}@c.us`;
                 await Promise.race([
                     whatsappClient.sendMessage(targetId, finalMessage + "\u200B"),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('WhatsApp message delivery timeout (35s)')), 35000))
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('WhatsApp message delivery timeout (25s)')), 25000))
                 ]);
                 console.log(`[WhatsApp] Successfully sent independent msg to ${targetId}: "${finalMessage.substring(0, 40)}"`);
                 return `تم إرسال الرسالة بنجاح عبر الواتساب إلى الرقم +${rawTarget}.`;
@@ -1793,34 +1781,23 @@ async function startServer() {
                     clientId: "client-one",
                     dataPath: authPath
                 }),
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-                webVersionCache: {
-                    type: 'none'
-                },
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
                     headless: process.env.HEADLESS === 'true' ? true : (process.platform === 'win32' ? false : true),
-                    protocolTimeout: 300000,
-                    ignoreDefaultArgs: ['--enable-automation'],
                     args: [
                         '--no-sandbox', 
                         '--disable-setuid-sandbox',
                         '--disable-dev-shm-usage',
                         '--disable-accelerated-2d-canvas',
                         '--no-first-run',
+                        '--no-zygote',
                         '--disable-gpu',
                         '--disable-background-timer-throttling',
                         '--disable-backgrounding-occluded-windows',
-                        '--disable-renderer-backgrounding',
-                        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-                        '--window-size=1280,800'
+                        '--disable-renderer-backgrounding'
                     ],
-                    timeout: 300000
-                },
-                authTimeoutMs: 300000,
-                qrMaxRetries: 0,
-                takeoverOnConflict: true,
-                takeoverTimeoutMs: 10000
+                    timeout: 60000
+                }
             });
 
             whatsappClient.on('qr', async (qr: string) => {
@@ -2635,29 +2612,11 @@ async function startServer() {
             if (whatsappClient && isWhatsappConnected && !isSyntheticPhone) {
                 const processOutreach = async () => {
                     try {
-                        let verifiedWid: string | null = null;
-                        try {
-                            const numId: any = await Promise.race([
-                                whatsappClient.getNumberId(cleanNumber),
-                                new Promise((_, r) => setTimeout(() => r(null), 6000))
-                            ]);
-                            if (numId && (numId as any)._serialized) {
-                                verifiedWid = (numId as any)._serialized;
-                            }
-                        } catch (nidErr: any) {
-                            console.warn(`[Order WhatsApp Outreach] getNumberId failed for +${cleanNumber}:`, nidErr?.message);
-                        }
-
-                        const sendTarget = verifiedWid || targetId;
-                        console.log(`[Order WhatsApp Outreach] Target for +${cleanNumber}: ${sendTarget}`);
-
+                        console.log(`[Order WhatsApp Outreach] Initiating outreach to ${targetId}...`);
                         const promptForWelcome = `العميل قدم طلباً باسم (${rawName}) لخدمة (${rawProduct}) وتفاصيل (${rawDetails}) عبر موقع شركة Texora للبرمجيات.\n\nصيغ رسالة ترحيبية هادئة وقصيرة ومريحة جداً (سطرين إلى 3 أسطر فقط) باسم شركة Texora للبرمجيات، ترحب به وتؤكد له استلام طلبه وتسأله بكل بساطة وهدوء عن فكرته لنبدأ النقاش خطوة بخطوة. لا تسأله أسئلة كثيرة ولا تطلب كل التفاصيل دفعة واحدة.`;
-                        const initialReply = await callGroqLLM(sendTarget, promptForWelcome, false, cleanNumber);
+                        const initialReply = await callGroqLLM(targetId, promptForWelcome, false, cleanNumber);
                         if (initialReply && whatsappClient) {
-                            await Promise.race([
-                                whatsappClient.sendMessage(sendTarget, initialReply + "\u200B"),
-                                new Promise((_, reject) => setTimeout(() => reject(new Error('WhatsApp order outreach timeout (35s)')), 35000))
-                            ]);
+                            await whatsappClient.sendMessage(targetId, initialReply + "\u200B");
                             console.log(`[Order WhatsApp Outreach] Successfully sent welcome message to +${cleanNumber}`);
 
                             // Update whatsapp_notified flag in Supabase
@@ -2677,10 +2636,7 @@ async function startServer() {
                             if (adminTarget.startsWith('0')) adminTarget = '2' + adminTarget;
                             const adminId = `${adminTarget}@c.us`;
                             const adminNotify = `🔔 *طلب وارد جديد من موقع شركة Texora!*\n\n👤 *العميل:* ${rawName}\n📞 *الرقم:* +${cleanNumber}\n💻 *الخدمة:* ${rawProduct}\n📝 *الطلب:* ${rawDetails}\n\n_قام المساعد الذكي بالتواصل الفوري مع العميل عبر الواتساب لمناقشة التصميم._`;
-                            await Promise.race([
-                                whatsappClient.sendMessage(adminId, adminNotify + "\u200B"),
-                                new Promise((_, reject) => setTimeout(() => reject(new Error('Admin notify timeout (20s)')), 20000))
-                            ]).catch(e => console.warn("[Admin notify error]:", e?.message));
+                            await whatsappClient.sendMessage(adminId, adminNotify + "\u200B").catch(() => {});
                         }
                     } catch (waErr) {
                         console.error("[Order WhatsApp Outreach Error]:", waErr);
@@ -3920,29 +3876,11 @@ async function startServer() {
                 // 2. WhatsApp Outreach (only when WhatsApp is connected)
                 if (whatsappClient && isWhatsappConnected && cleanPhone.length >= 10) {
                     try {
-                        let verifiedWid: string | null = null;
-                        try {
-                            const numId: any = await Promise.race([
-                                whatsappClient.getNumberId(cleanPhone),
-                                new Promise((_, r) => setTimeout(() => r(null), 6000))
-                            ]);
-                            if (numId && (numId as any)._serialized) {
-                                verifiedWid = (numId as any)._serialized;
-                            }
-                        } catch (nidErr: any) {
-                            console.warn(`[Supabase Order Poller] getNumberId failed for +${cleanPhone}:`, nidErr?.message);
-                        }
-
-                        const sendTarget = verifiedWid || targetId;
-                        console.log(`[Supabase Order Poller] Outreach target for +${cleanPhone}: ${sendTarget}`);
-
+                        console.log(`[Supabase Order Poller] Outreach target for +${cleanPhone}: ${targetId}`);
                         const promptForWelcome = `العميل قدم طلباً باسم (${order.client_name}) لخدمة (${order.service_title}) وتفاصيل (${order.details}) عبر موقع الشركة الرسمي.\n\nصيغ رسالة ترحيبية ودية ومريحة جداً (سطرين إلى 3 أسطر) باسم شركة Texora للبرمجيات، ترحب به وتؤكد له استلام طلبه وتسأله بكل بساطة عن فكرته لتحديد المواصفات بوضوح.`;
-                        const initialReply = await callGroqLLM(sendTarget, promptForWelcome, false, cleanPhone);
+                        const initialReply = await callGroqLLM(targetId, promptForWelcome, false, cleanPhone);
                         if (initialReply && whatsappClient) {
-                            await Promise.race([
-                                whatsappClient.sendMessage(sendTarget, initialReply + "\u200B"),
-                                new Promise((_, reject) => setTimeout(() => reject(new Error('WhatsApp order outreach timeout (35s)')), 35000))
-                            ]);
+                            await whatsappClient.sendMessage(targetId, initialReply + "\u200B");
                             console.log(`[Supabase Order Poller] Successfully sent initial WhatsApp welcome to +${cleanPhone}`);
                         }
                     } catch (waErr: any) {
