@@ -151,6 +151,8 @@ export default function App() {
   };
   const [waLoading, setWaLoading] = useState(false);
   const [waQr, setWaQr] = useState<string | null>(null);
+  const [qrExpiresIn, setQrExpiresIn] = useState<number>(25);
+  const [isRefreshingQr, setIsRefreshingQr] = useState<boolean>(false);
   
   const [config, setConfig] = useState<Config>({ 
     adminNumber: '', 
@@ -257,26 +259,41 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    const checkStatus = async () => {
-      try {
-        const res = await fetch('/api/whatsapp-status');
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data) {
-          setWaConnected(!!data.connected);
-          setWaQr(data.qr || null);
-          if (data.isReady && !data.connected && !data.qr) {
-            setWaLoading(true);
-          } else {
-            setWaLoading(false);
-          }
+  const checkStatus = async () => {
+    try {
+      const res = await fetch('/api/whatsapp-status?t=' + Date.now());
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data) {
+        setWaConnected(!!data.connected);
+        setWaQr(data.qr || null);
+        if (typeof data.expiresInSec === 'number') {
+          setQrExpiresIn(data.expiresInSec);
         }
-      } catch {
-        // Graceful fallback during server startup/restart
+        if (data.isReady && !data.connected && !data.qr) {
+          setWaLoading(true);
+        } else {
+          setWaLoading(false);
+        }
       }
-    };
+    } catch {
+      // Graceful fallback during server startup/restart
+    }
+  };
 
+  const refreshQrCode = async () => {
+    setIsRefreshingQr(true);
+    try {
+      await fetch('/api/whatsapp/refresh-qr', { method: 'POST' });
+      await checkStatus();
+    } catch {
+      // Graceful fallback
+    } finally {
+      setTimeout(() => setIsRefreshingQr(false), 1200);
+    }
+  };
+
+  useEffect(() => {
     checkStatus();
     fetchClients();
     fetchServerInfo();
@@ -331,15 +348,21 @@ export default function App() {
       fetchServerInfo();
     });
 
-    // Background poll every 3 seconds to keep UI synced in real-time even without WebSockets
+    // Background poll every 2.5 seconds to keep UI & QR synced in real-time even without WebSockets
     const statusInterval = setInterval(() => {
       checkStatus();
       fetchClients();
       fetchServerInfo();
-    }, 3000);
+    }, 2500);
+
+    // Smooth UI countdown ticker
+    const countdownInterval = setInterval(() => {
+      setQrExpiresIn(prev => (prev > 1 ? prev - 1 : 25));
+    }, 1000);
 
     return () => {
       clearInterval(statusInterval);
+      clearInterval(countdownInterval);
       socket.off('whatsapp-status');
       socket.off('config');
       socket.off('new-lead');
@@ -1963,8 +1986,30 @@ notifyTexoraBot({
                         </div>
                       ) : waQr ? (
                         <div className="text-center space-y-3">
+                          <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded-full text-[11px] font-bold">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                            <span>كود متجدد تلقائياً (تجديد خلال {qrExpiresIn} ثانية)</span>
+                          </div>
                           <div className="p-3 bg-white rounded-xl inline-block shadow-xl">
                             <img src={waQr} alt="WhatsApp QR Code" className="w-48 h-48 object-contain" />
+                          </div>
+                          <div className="flex items-center justify-center gap-2 pt-1">
+                            <button
+                              onClick={refreshQrCode}
+                              disabled={isRefreshingQr}
+                              className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-1.5 px-3 rounded-xl transition shadow flex items-center gap-1.5 disabled:opacity-50"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingQr ? 'animate-spin' : ''}`} />
+                              تجديد الرمز فوراً
+                            </button>
+                            <a
+                              href="/qr"
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-1.5 px-3 rounded-xl border border-slate-700 transition"
+                            >
+                              صفحة الربط السريعة ↗
+                            </a>
                           </div>
                           <p className="text-xs text-amber-300 font-bold animate-pulse">
                             امسح الكود الآن باستخدام تطبيق الواتساب بهاتفك!
@@ -2223,8 +2268,30 @@ notifyTexoraBot({
                     </div>
                   ) : waQr ? (
                     <div className="flex flex-col items-center justify-center bg-slate-900 border-2 border-dashed border-slate-800 rounded-2xl p-6">
+                      <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded-full text-[11px] font-bold mb-3">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                        <span>كود لحظي متجدد تلقائياً (تجديد خلال {qrExpiresIn} ثانية)</span>
+                      </div>
                       <div className="bg-white p-3 rounded-2xl mb-4 shadow-xl">
                         <img src={waQr} alt="WhatsApp QR Code" className="w-52 h-52" />
+                      </div>
+                      <div className="flex items-center justify-center gap-2 mb-3">
+                        <button
+                          onClick={refreshQrCode}
+                          disabled={isRefreshingQr}
+                          className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-1.5 px-3 rounded-xl transition shadow flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingQr ? 'animate-spin' : ''}`} />
+                          تجديد الرمز فوراً
+                        </button>
+                        <a
+                          href="/qr"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-1.5 px-3 rounded-xl border border-slate-700 transition"
+                        >
+                          صفحة الربط السريعة ↗
+                        </a>
                       </div>
                       <p className="text-xs font-bold text-slate-200">امسح رمز QR عبر تطبيق واتساب لربط الحساب وحفظ الجلسة دائماً</p>
                       <p className="text-[11px] text-slate-400 mt-1">بمجرد المسح لمرة واحدة، سيظل البوت متصلاً دائماً حتى بعد تحديث الصفحة</p>
