@@ -2254,6 +2254,25 @@ async function startServer() {
                 if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
                 isStartingWhatsApp = false;
                 console.log("[WhatsApp] Client initialization completed successfully.");
+                
+                // Auto-dismiss any blocking WhatsApp Web dialogs (e.g. "What's new" / "متابعة")
+                setInterval(async () => {
+                    try {
+                        const pup = (whatsappClient as any)?.pupPage;
+                        if (pup && !pup.isClosed?.()) {
+                            await pup.evaluate(() => {
+                                const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                                const continueBtn = buttons.find(b => {
+                                    const txt = b.textContent?.trim() || '';
+                                    return txt === 'متابعة' || txt === 'Continue' || txt === 'حسناً' || txt === 'OK';
+                                });
+                                if (continueBtn) {
+                                    (continueBtn as HTMLElement).click();
+                                }
+                            });
+                        }
+                    } catch {}
+                }, 4000);
             }).catch(err => {
                 if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
                 console.error("WhatsApp Initialization Error:", err);
@@ -2846,6 +2865,49 @@ async function startServer() {
             ageSeconds: ageSec,
             expiresInSec: Math.max(0, 20 - ageSec)
         });
+    });
+
+    app.get('/api/debug/wa-dismiss-modal', async (req, res) => {
+        try {
+            if (!whatsappClient?.pupPage) return res.json({ error: 'no pupPage' });
+            const clicked = await whatsappClient.pupPage.evaluate(() => {
+                const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
+                const continueBtn = buttons.find(b => b.textContent?.includes('متابعة') || b.textContent?.includes('Continue') || b.textContent?.includes('حسناً') || b.textContent?.includes('OK'));
+                if (continueBtn) {
+                    (continueBtn as HTMLElement).click();
+                    return continueBtn.textContent;
+                }
+                return null;
+            });
+            res.json({ clicked });
+        } catch (e: any) {
+            res.status(500).json({ error: e?.message });
+        }
+    });
+
+    app.get('/api/debug/wa-info', async (req, res) => {
+        try {
+            if (!whatsappClient?.pupPage) return res.json({ error: 'no pupPage' });
+            const pageUrl = await whatsappClient.pupPage.url();
+            const title = await whatsappClient.pupPage.title();
+            const text = await whatsappClient.pupPage.evaluate(() => document.body?.innerText?.substring(0, 300) || '');
+            res.json({ pageUrl, title, text, isWhatsappConnected });
+        } catch (e: any) {
+            res.status(500).json({ error: e?.message });
+        }
+    });
+
+    app.get('/api/debug/wa-screenshot', async (req, res) => {
+        try {
+            if (!whatsappClient?.pupPage) return res.status(500).send('no pupPage');
+            const pageUrl = await whatsappClient.pupPage.url();
+            const screenshot = await whatsappClient.pupPage.screenshot({ encoding: 'binary' });
+            res.setHeader('X-WA-Page-URL', pageUrl);
+            res.setHeader('Content-Type', 'image/png');
+            res.send(screenshot);
+        } catch (e: any) {
+            res.status(500).send(e?.message);
+        }
     });
 
     app.get(['/api/whatsapp-qr.png', '/api/qr.png'], (req, res) => {
