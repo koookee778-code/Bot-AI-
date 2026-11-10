@@ -933,6 +933,48 @@ function cleanMessagesForTextOnly(messages: any[]): any[] {
 
 import puppeteer, { Browser, Page, KeyInput } from 'puppeteer';
 
+// Monkey-patch puppeteer.launch to inject WebRTC/OpenH264 crash guards on all pages
+const origPuppeteerLaunch = puppeteer.launch.bind(puppeteer);
+puppeteer.launch = (async (opts: any) => {
+    const browser = await origPuppeteerLaunch(opts);
+    const origNewPage = browser.newPage.bind(browser);
+
+    const guardPageFromWebRtcCrashes = async (page: any) => {
+        try {
+            await page.evaluateOnNewDocument(() => {
+                try {
+                    // Neutering WebRTC and OpenH264 to prevent headless Linux SIGSEGV crashes
+                    const noopPromise = () => Promise.reject(new Error('Media disabled'));
+                    if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
+                        navigator.mediaDevices.getUserMedia = noopPromise as any;
+                        navigator.mediaDevices.getDisplayMedia = noopPromise as any;
+                        navigator.mediaDevices.enumerateDevices = async () => [];
+                    }
+                    delete (window as any).RTCPeerConnection;
+                    delete (window as any).webkitRTCPeerConnection;
+                    delete (window as any).RTCSessionDescription;
+                    delete (window as any).RTCIceCandidate;
+                } catch (e) {}
+            });
+        } catch (e) {}
+    };
+
+    browser.newPage = async () => {
+        const page = await origNewPage();
+        await guardPageFromWebRtcCrashes(page);
+        return page;
+    };
+
+    try {
+        const existingPages = await browser.pages();
+        for (const p of existingPages) {
+            await guardPageFromWebRtcCrashes(p);
+        }
+    } catch (e) {}
+
+    return browser;
+}) as any;
+
 let persistentBrowser: Browser | null = null;
 let persistentPage: Page | null = null;
 
@@ -2120,10 +2162,14 @@ async function startServer() {
                         '--disable-gpu',
                         '--disable-software-rasterizer',
                         '--mute-audio',
+                        '--disable-webrtc',
                         '--disable-webrtc-hw-encoding',
                         '--disable-webrtc-hw-decoding',
+                        '--disable-webrtc-encryption',
                         '--disable-video-capture',
-                        '--disable-features=WebRtcHideLocalIpsWithMdns,MediaStream,WebRTC',
+                        '--disable-accelerated-video-decode',
+                        '--disable-accelerated-video-encode',
+                        '--disable-features=WebRtcHideLocalIpsWithMdns,MediaStream,WebRTC,WebRtcAecTunnel',
                         '--disable-background-timer-throttling',
                         '--disable-backgrounding-occluded-windows',
                         '--disable-renderer-backgrounding'
