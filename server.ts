@@ -129,6 +129,7 @@ let lastQrTimestamp: number = 0;
 let lastClientStartTime: number = 0;
 let startupSafetyTimer: NodeJS.Timeout | null = null;
 let lastRefreshAttempt: number = 0;
+let lastHealthCheckTime: number = 0;
 
 export interface ClientLead {
     id?: string;
@@ -2002,6 +2003,31 @@ async function startServer() {
         }, delayMs);
     };
 
+    const attachPageListeners = (page: any) => {
+        if (!page || page._antigravityAttached) return;
+        page._antigravityAttached = true;
+        page.on('error', (err: any) => {
+            console.error("[WhatsApp Page Crash Detected!]:", err?.message || err);
+            isWhatsappConnected = false;
+            restartWhatsappClient(false).catch(() => {});
+        });
+        page.on('close', () => {
+            console.warn("[WhatsApp Page Closed unexpectedly!]");
+            isWhatsappConnected = false;
+            restartWhatsappClient(false).catch(() => {});
+        });
+    };
+
+    const attachBrowserListeners = (browser: any) => {
+        if (!browser || browser._antigravityAttached) return;
+        browser._antigravityAttached = true;
+        browser.on('disconnected', () => {
+            console.warn("[WhatsApp PupBrowser Disconnected unexpectedly!]");
+            isWhatsappConnected = false;
+            restartWhatsappClient(false).catch(() => {});
+        });
+    };
+
     const startWhatsappClient = async () => {
         if (whatsappClient) return { message: 'Already starting/started' };
         if (isStartingWhatsApp) return { message: 'Already starting/started' };
@@ -2033,6 +2059,11 @@ async function startServer() {
                     clientId: "client-one",
                     dataPath: authPath
                 }),
+                webVersionCache: {
+                    type: 'remote',
+                    remotePath: 'https://raw.githubusercontent.com/wwebjs/webVersionCache/master/html/{version}.html',
+                    strict: false
+                },
                 puppeteer: { 
                     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
                     headless: process.env.HEADLESS === 'true' ? true : (process.platform === 'win32' ? false : true),
@@ -2043,11 +2074,24 @@ async function startServer() {
                         '--disable-dev-shm-usage',
                         '--disable-accelerated-2d-canvas',
                         '--no-first-run',
-                        '--no-zygote',
                         '--disable-gpu',
+                        '--js-flags=--max-old-space-size=256',
+                        '--renderer-process-limit=1',
+                        '--disable-extensions',
+                        '--disable-component-extensions-with-background-pages',
+                        '--disable-default-apps',
+                        '--mute-audio',
+                        '--no-default-browser-check',
                         '--disable-background-timer-throttling',
                         '--disable-backgrounding-occluded-windows',
-                        '--disable-renderer-backgrounding'
+                        '--disable-renderer-backgrounding',
+                        '--disable-features=Translate,BackForwardCache,AcceptCHFrame,AvoidUnnecessaryBeforeUnloadCheckSync,IsolateOrigins,site-per-process',
+                        '--disk-cache-size=10485760',
+                        '--media-cache-size=10485760',
+                        '--disable-client-side-phishing-detection',
+                        '--disable-sync',
+                        '--disable-breakpad',
+                        '--disable-component-update'
                     ],
                     timeout: 60000
                 }
@@ -2091,6 +2135,8 @@ async function startServer() {
                 hasSavedSession = true;
                 isWhatsappConnected = true;
                 qrCodeDataUrl = null;
+                if (whatsappClient?.pupPage) attachPageListeners(whatsappClient.pupPage);
+                if (whatsappClient?.pupBrowser) attachBrowserListeners(whatsappClient.pupBrowser);
                 saveConfigToDisk();
                 updateBotState({ qr_code: null, is_connected: true, phone_number: whatsappClient?.info?.wid?.user }).catch(() => {});
                 io.emit('whatsapp-status', { 
@@ -2870,6 +2916,8 @@ ${noticeBody}
                 if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
                 isStartingWhatsApp = false;
                 console.log("[WhatsApp] Client initialization completed successfully.");
+                if (whatsappClient?.pupPage) attachPageListeners(whatsappClient.pupPage);
+                if (whatsappClient?.pupBrowser) attachBrowserListeners(whatsappClient.pupBrowser);
             }).catch(err => {
                 if (startupSafetyTimer) clearTimeout(startupSafetyTimer);
                 console.error("WhatsApp Initialization Error:", err);
@@ -2896,10 +2944,28 @@ ${noticeBody}
     startWhatsappClient().catch(e => console.error("Auto-start WA on boot failed:", e));
 
     // Periodic watchdog (every 25 seconds) to ensure permanent connection remains active
-    setInterval(() => {
+    setInterval(async () => {
         if (!whatsappClient && !isStartingWhatsApp && (hasSavedSession || fs.existsSync(path.join(process.cwd(), '.wwebjs_auth', 'session-client-one')))) {
             console.log("[WhatsApp Watchdog] Session exists but client is offline. Auto-restoring connection...");
             startWhatsappClient().catch(() => {});
+            return;
+        }
+
+        // Periodic Session Liveness Watchdog (every 25 seconds)
+        if (isWhatsappConnected && whatsappClient?.pupPage && !whatsappClient.pupPage.isClosed?.() && !isStartingWhatsApp) {
+            const now = Date.now();
+            if (now - lastHealthCheckTime > 25000) {
+                lastHealthCheckTime = now;
+                try {
+                    const healthPromise = whatsappClient.pupPage.evaluate(() => typeof (window as any).WWebJS !== 'undefined');
+                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Liveness check timed out (5s)')), 5000));
+                    await Promise.race([healthPromise, timeoutPromise]);
+                } catch (healthErr: any) {
+                    console.warn("[WhatsApp Session Health Check Failed - Browser stalled/crashed!]:", healthErr?.message || healthErr);
+                    isWhatsappConnected = false;
+                    restartWhatsappClient(false).catch(() => {});
+                }
+            }
         }
     }, 25000);
 

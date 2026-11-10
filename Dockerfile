@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
     NODE_ENV=production \
+    NODE_OPTIONS="--max-old-space-size=256" \
     PORT=3001
 
 WORKDIR /app
@@ -35,5 +36,5 @@ RUN npm run build
 # Expose server port
 EXPOSE 3001
 
-# Run the Bot server
-CMD ["./node_modules/.bin/tsx", "server.ts"]
+# Run the Bot server with constrained V8 memory limit
+CMD ["node", "--max-old-space-size=256", "./node_modules/.bin/tsx", "server.ts"]
