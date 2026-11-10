@@ -209,7 +209,7 @@ export async function createProjectOrder(params: {
         expected_duration: params.expectedDuration || 'أسبوعين',
         status: 'pending', // pending pickup in team group
         source: 'whatsapp_bot',
-        whatsapp_notified: false,
+        whatsapp_notified: true,
         created_at: now,
         updated_at: now
     };
@@ -238,48 +238,85 @@ export async function assignOrderToEmployee(
         const now = new Date().toISOString();
 
         // Find order by code (e.g. ORD-1234 or 1234) or by ID
-        const cleanCode = orderIdentifier.trim().toUpperCase().replace(/^#/, '');
+        const cleanCode = (orderIdentifier || '').trim().toUpperCase().replace(/^#/, '');
         
-        let query = supabase.from('orders').select('*');
-        if (cleanCode.startsWith('ORD-')) {
-            query = query.eq('order_code', cleanCode);
-        } else if (/^\d+$/.test(cleanCode)) {
-            query = query.or(`order_code.eq.ORD-${cleanCode},order_code.eq.${cleanCode},id.eq.${cleanCode}`);
-        } else {
-            query = query.or(`order_code.ilike.%${cleanCode}%,id.eq.${cleanCode}`);
-        }
+        let targetOrder: WebsiteOrder | null = null;
 
-        const { data: foundOrders, error: findErr } = await query;
-        if (findErr || !foundOrders || foundOrders.length === 0) {
-            // If not found, try getting the most recent pending order!
-            const { data: latestPending } = await supabase
+        if (!cleanCode) {
+            // Direct pickup: fetch the latest pending order
+            const { data: latestPending, error: pErr } = await supabase
                 .from('orders')
                 .select('*')
                 .eq('status', 'pending')
                 .order('created_at', { ascending: false })
                 .limit(1);
 
+            if (pErr) console.error('[assignOrderToEmployee fetch latestPending error]:', pErr);
+
             if (latestPending && latestPending.length > 0) {
-                const targetOrder = latestPending[0];
-                return await executeAssignment(targetOrder.id, targetOrder.order_code, cleanEmpPhone, employeeName, now);
+                targetOrder = latestPending[0];
+            } else {
+                // If no pending orders, check for unassigned non-completed orders
+                const { data: unassigned } = await supabase
+                    .from('orders')
+                    .select('*')
+                    .is('assigned_to', null)
+                    .neq('status', 'completed')
+                    .order('created_at', { ascending: false })
+                    .limit(1);
+
+                if (unassigned && unassigned.length > 0) {
+                    targetOrder = unassigned[0];
+                } else {
+                    return { success: false, message: `لا توجد أي مشاريع جديدة معلقة بانتظار الاستلام حالياً! جميع المشاريع قيد التنفيذ أو مكتملة.` };
+                }
+            }
+        } else {
+            let query = supabase.from('orders').select('*');
+            if (cleanCode.startsWith('ORD-')) {
+                query = query.eq('order_code', cleanCode);
+            } else if (/^\d+$/.test(cleanCode)) {
+                query = query.or(`order_code.eq.ORD-${cleanCode},order_code.eq.${cleanCode},id.eq.${cleanCode}`);
+            } else {
+                query = query.or(`order_code.ilike.%${cleanCode}%,id.eq.${cleanCode}`);
             }
 
-            return { success: false, message: `لم يتم العثور على مشروع بالكود أو الرقم المحدد: ${orderIdentifier}` };
+            const { data: foundOrders, error: findErr } = await query;
+            if (!findErr && foundOrders && foundOrders.length > 0) {
+                targetOrder = foundOrders[0];
+            } else {
+                // Fallback to latest pending if specified code not found
+                const { data: latestPending } = await supabase
+                    .from('orders')
+                    .select('*')
+                    .eq('status', 'pending')
+                    .order('created_at', { ascending: false })
+                    .limit(1);
+
+                if (latestPending && latestPending.length > 0) {
+                    targetOrder = latestPending[0];
+                } else {
+                    return { success: false, message: `لم يتم العثور على مشروع بالكود المحدد (${orderIdentifier})، ولا توجد مشاريع معلقة حالياً.` };
+                }
+            }
         }
 
-        const targetOrder = foundOrders[0];
+        if (!targetOrder) {
+            return { success: false, message: `لم يتم العثور على أي مشروع متاح للاستلام.` };
+        }
+
         if (targetOrder.status === 'in_progress' && targetOrder.assigned_to) {
             return {
                 success: false,
                 order: targetOrder,
-                message: `هذا المشروع مستلم بالفعل بواسطة: ${targetOrder.assigned_to_name || targetOrder.assigned_to}`
+                message: `هذا المشروع (#${targetOrder.order_code}) مستلم بالفعل بواسطة: ${targetOrder.assigned_to_name || targetOrder.assigned_to}`
             };
         }
         if (targetOrder.status === 'completed') {
             return {
                 success: false,
                 order: targetOrder,
-                message: `هذا المشروع مكتمل ومنتهي بالفعل! ✔️`
+                message: `المشروع #${targetOrder.order_code} مكتمل ومنتهي بالفعل! ✔️`
             };
         }
 
@@ -323,22 +360,22 @@ export async function completeOrder(
     try {
         const cleanEmpPhone = employeePhone.replace(/\D/g, '') || employeePhone;
         const now = new Date().toISOString();
-        const cleanCode = orderIdentifier.trim().toUpperCase().replace(/^#/, '');
+        const cleanCode = (orderIdentifier || '').trim().toUpperCase().replace(/^#/, '');
 
-        let query = supabase.from('orders').select('*');
+        let target: WebsiteOrder | null = null;
+
         if (cleanCode.startsWith('ORD-')) {
-            query = query.eq('order_code', cleanCode);
-        } else if (/^\d+$/.test(cleanCode)) {
-            query = query.or(`order_code.eq.ORD-${cleanCode},order_code.eq.${cleanCode}`);
-        } else {
-            // Find by assigned_to if code not specified
-            query = query.eq('assigned_to', cleanEmpPhone).eq('status', 'in_progress');
+            const { data } = await supabase.from('orders').select('*').eq('order_code', cleanCode).limit(1);
+            if (data && data.length > 0) target = data[0];
+        } else if (/^\d+$/.test(cleanCode) && cleanCode.length >= 3) {
+            const { data } = await supabase.from('orders').select('*').or(`order_code.eq.ORD-${cleanCode},order_code.eq.${cleanCode}`).limit(1);
+            if (data && data.length > 0) target = data[0];
         }
 
-        const { data: foundOrders, error: findErr } = await query;
-        if (findErr || !foundOrders || foundOrders.length === 0) {
-            // Fallback: get the most recent in_progress order for this employee
-            const { data: empActive } = await supabase
+        // If no code or order not found by code, look for orders assigned to this employee
+        if (!target) {
+            // 1. Try exact cleanEmpPhone
+            let { data: empActive } = await supabase
                 .from('orders')
                 .select('*')
                 .eq('assigned_to', cleanEmpPhone)
@@ -346,14 +383,45 @@ export async function completeOrder(
                 .order('assigned_at', { ascending: false })
                 .limit(1);
 
-            if (empActive && empActive.length > 0) {
-                return await executeCompletion(empActive[0].id, empActive[0].order_code, cleanEmpPhone, empActive[0].assigned_to_name || 'الموظف', now);
+            // 2. Try partial match (last 8 digits) if not found
+            if (!empActive || empActive.length === 0) {
+                const phoneTail = cleanEmpPhone.slice(-8);
+                if (phoneTail.length >= 8) {
+                    const { data: tailMatch } = await supabase
+                        .from('orders')
+                        .select('*')
+                        .ilike('assigned_to', `%${phoneTail}%`)
+                        .eq('status', 'in_progress')
+                        .order('assigned_at', { ascending: false })
+                        .limit(1);
+                    empActive = tailMatch;
+                }
             }
 
-            return { success: false, message: `لم يتم العثور على مشروع جاري مطابق لتسليمه.` };
+            // 3. Fallback: most recent in_progress order overall
+            if (!empActive || empActive.length === 0) {
+                const { data: latestInProgress } = await supabase
+                    .from('orders')
+                    .select('*')
+                    .eq('status', 'in_progress')
+                    .order('assigned_at', { ascending: false })
+                    .limit(1);
+                empActive = latestInProgress;
+            }
+
+            if (empActive && empActive.length > 0) {
+                target = empActive[0];
+            }
         }
 
-        const target = foundOrders[0];
+        if (!target) {
+            return { success: false, message: `لم يتم العثور على أي مشروع قيد التنفيذ لتسليمه.` };
+        }
+
+        if (target.status === 'completed') {
+            return { success: false, message: `المشروع #${target.order_code} مسجل بالفعل أنه منجز ومكتمل! ✔️` };
+        }
+
         return await executeCompletion(target.id, target.order_code, cleanEmpPhone, target.assigned_to_name || 'الموظف', now);
     } catch (err: any) {
         console.error('[completeOrder Error]:', err?.message || err);
@@ -732,6 +800,8 @@ export async function getPendingOrders(): Promise<WebsiteOrder[]> {
             .from('orders')
             .select('*')
             .eq('status', 'pending')
+            .neq('source', 'whatsapp_bot')
+            .eq('whatsapp_notified', false)
             .order('created_at', { ascending: true })
             .limit(10);
 

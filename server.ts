@@ -141,6 +141,7 @@ export interface ClientLead {
 }
 
 const chatHistories: Record<string, any[]> = {};
+const userLastOrderTimestamp: Record<string, number> = {};
 const clientsDB: Record<string, ClientLead> = {};
 let ioInstance: any = null;
 
@@ -1066,6 +1067,13 @@ async function executeTool(funcName: string, args: any, userId: string, isAdmin:
         safeSaveJSON('tasks_db.json', tasksDB);
         return "تم جدولة المهمة بنجاح وستعمل بشكل دوري في الخلفية.";
     } else if (funcName === 'save_client_info') {
+        const lastOrderTime = userLastOrderTimestamp[userId] || 0;
+        if (Date.now() - lastOrderTime < 10 * 60 * 1000) {
+            console.log(`[save_client_info] Debouncing duplicate order creation for user: ${userId}`);
+            return "تم تسجيل طلب هذا العميل بالفعل مسبقاً وتمريره لفريق العمل في الجروب بنجاح. لا حاجة لإنشاء طلب مكرر.";
+        }
+        userLastOrderTimestamp[userId] = Date.now();
+
         const clientPhone = (chatHistories[userId] as any)?.clientPhone || userId.replace('@c.us', '').replace('@lid', '').replace(/\D/g, '');
         const clientName = args.name || 'عميل Texora';
         const requestDetails = args.request || userMessage || 'طلب تصميم وبرمجة مشروع';
@@ -2112,8 +2120,18 @@ async function startServer() {
                             let senderName = 'مهندس في الفريق';
                             try {
                                 const contact = await msg.getContact();
-                                if (contact && (contact.pushname || contact.name)) {
-                                    senderName = contact.pushname || contact.name;
+                                if (contact) {
+                                    if (contact.pushname || contact.name) {
+                                        senderName = contact.pushname || contact.name;
+                                    }
+                                    if (contact.number) {
+                                        let num = contact.number.replace(/\D/g, '');
+                                        if (num.length >= 8) {
+                                            if (num.startsWith('0')) num = '2' + num;
+                                            if (!num.startsWith('2') && num.length === 10) num = '20' + num;
+                                            cleanSenderPhone = num;
+                                        }
+                                    }
                                 }
                             } catch {}
 
@@ -2259,8 +2277,8 @@ async function startServer() {
                                 return;
                             }
 
-                            // 6. /اوامر or /مساعدة
-                            if (/^\/?(?:اوامر|أوامر|مساعدة|help)/i.test(text)) {
+                            // 6. /اوامر or /مساعدة or /كيف
+                            if (/^\/?(?:اوامر|أوامر|مساعدة|help|كيف|ازاي|طريقة)/i.test(text)) {
                                 const helpText = 
 `🤖 *أوامر بوت فريق العمل Texora:*
 ━━━━━━━━━━━━━━━━━━━━
@@ -4467,6 +4485,11 @@ _المساعد الذكي "سارة" بدأ التواصل التلقائي م�
             if (!pendingOrders || pendingOrders.length === 0) return;
 
             for (const order of pendingOrders) {
+                // Skip WhatsApp bot orders or already notified orders completely
+                if (order.source === 'whatsapp_bot' || order.whatsapp_notified) {
+                    continue;
+                }
+
                 let cleanPhone = (order.phone || '').replace(/\D/g, '');
                 if (cleanPhone.startsWith('0')) cleanPhone = '2' + cleanPhone;
                 if (!cleanPhone.startsWith('2') && cleanPhone.length === 10) cleanPhone = '20' + cleanPhone;
@@ -4505,8 +4528,7 @@ _المساعد الذكي "سارة" بدأ التواصل التلقائي م�
                         console.error('[Supabase Order Poller WA Error]:', waErr?.message || waErr);
                     } finally {
                         await markOrderNotified(order.id, {
-                            whatsapp_notified: true,
-                            status: 'in_consultation'
+                            whatsapp_notified: true
                         });
                     }
                 } else {
