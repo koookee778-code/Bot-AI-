@@ -1,34 +1,25 @@
-# Production Dockerfile for TEXORA Autonomous Bot on Vercel Daemons
+# Production Dockerfile for TEXORA Autonomous Bot on Railway
 FROM node:22-slim
 
-# Install system dependencies: Chromium, FFmpeg, fonts, and required native libraries
+# Install system dependencies, FFmpeg, fonts, and Google Chrome Stable
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium \
+    wget \
+    gnupg \
+    ca-certificates \
     ffmpeg \
     fonts-kacst \
     fonts-freefont-ttf \
     fonts-liberation \
-    ca-certificates \
     procps \
-    libasound2 \
-    libgbm1 \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libgtk-3-0 \
-    libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libxfixes3 \
-    libxss1 \
-    libxtst6 \
+    && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Configure environment for Puppeteer to use the installed Chromium
+# Configure environment for Puppeteer to use Google Chrome Stable
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable \
     NODE_ENV=production \
     NODE_OPTIONS="--max-old-space-size=256" \
     PORT=3001

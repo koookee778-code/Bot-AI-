@@ -2105,7 +2105,9 @@ async function startServer() {
                     dataPath: localSessionPath
                 }),
                 puppeteer: { 
-                    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+                    executablePath: (process.platform !== 'win32' && fs.existsSync('/usr/bin/google-chrome-stable'))
+                        ? '/usr/bin/google-chrome-stable'
+                        : (process.env.PUPPETEER_EXECUTABLE_PATH || undefined),
                     headless: process.env.HEADLESS === 'true' ? true : (process.platform === 'win32' ? false : true),
                     dumpio: true,
                     protocolTimeout: 60000,
@@ -2118,6 +2120,10 @@ async function startServer() {
                         '--disable-gpu',
                         '--disable-software-rasterizer',
                         '--mute-audio',
+                        '--disable-webrtc-hw-encoding',
+                        '--disable-webrtc-hw-decoding',
+                        '--disable-video-capture',
+                        '--disable-features=WebRtcHideLocalIpsWithMdns,MediaStream,WebRTC',
                         '--disable-background-timer-throttling',
                         '--disable-backgrounding-occluded-windows',
                         '--disable-renderer-backgrounding'
