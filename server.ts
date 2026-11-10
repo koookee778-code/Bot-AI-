@@ -1956,19 +1956,21 @@ async function startServer() {
 
                     if (isVoiceOrAudio) {
                         if (msg.fromMe) return; // Don't reply to outgoing voice notes
-                        console.log(`[WhatsApp Voice] Incoming voice note from ${fromStr}`);
+                        console.log(`[WhatsApp Voice] Incoming voice note from ${fromStr}, type: ${msg.type}, directPath: ${!!(msg.directPath || msg._data?.directPath)}, mediaKey: ${!!(msg.mediaKey || msg._data?.mediaKey)}`);
                         let media: any = null;
                         for (let attempt = 1; attempt <= 3; attempt++) {
                             try {
                                 media = await msg.downloadMedia();
                                 if (media && media.data) {
-                                    console.log(`[WhatsApp Voice] Successfully downloaded media on attempt ${attempt}`);
+                                    console.log(`[WhatsApp Voice] Successfully downloaded media on attempt ${attempt} (${media.data.length} b64 chars)`);
                                     break;
+                                } else {
+                                    console.log(`[WhatsApp Voice Attempt ${attempt}] downloadMedia returned empty`);
                                 }
                             } catch (dErr: any) {
-                                console.warn(`[WhatsApp Voice Download Attempt ${attempt}]:`, dErr?.message || dErr);
+                                console.warn(`[WhatsApp Voice Download Attempt ${attempt} Error]:`, dErr?.message || dErr);
                             }
-                            if (attempt < 3) await new Promise(r => setTimeout(r, 800));
+                            if (attempt < 3) await new Promise(r => setTimeout(r, 1000));
                         }
 
                         // DOM fallback in server.ts if downloadMedia returned empty
@@ -2006,10 +2008,13 @@ async function startServer() {
                         if (media && media.data) {
                             try {
                                 const audioBuffer = Buffer.from(media.data, 'base64');
+                                console.log(`[WhatsApp Voice STT] Transcribing ${audioBuffer.length} bytes with Groq Whisper...`);
                                 const transcribed = await transcribeAudio(audioBuffer, media.mimetype || 'audio/ogg');
                                 if (transcribed && transcribed.trim()) {
                                     activeUserMessage = transcribed.trim();
-                                    console.log(`[WhatsApp Voice Transcribed]: "${activeUserMessage}"`);
+                                    console.log(`[WhatsApp Voice Transcribed Successfully]: "${activeUserMessage}"`);
+                                } else {
+                                    console.warn("[WhatsApp Voice STT] Transcription returned empty string.");
                                 }
                             } catch (err: any) {
                                 console.warn("[WhatsApp Voice STT Warning]:", err?.message || err);
@@ -2017,6 +2022,7 @@ async function startServer() {
                         }
 
                         if (!activeUserMessage.trim()) {
+                            console.warn(`[WhatsApp Voice] Could not transcribe voice note from ${fromStr}`);
                             await msg.reply("عذراً، لم أتمكن من سماع الصوت بوضوح، يرجى كتابة استفسارك أو إعادة إرساله 🎙️🙏\u200B").catch(() => {});
                             return;
                         }
@@ -2792,6 +2798,102 @@ async function startServer() {
             ageSeconds: ageSec,
             expiresInSec: Math.max(0, 20 - ageSec)
         });
+    });
+
+    app.get('/api/debug/wa-inspect', async (req, res) => {
+        try {
+            if (!whatsappClient?.pupPage) return res.json({ error: "no pupPage" });
+            const result = await whatsappClient.pupPage.evaluate(() => {
+                const msgs = (window as any).Store?.Msg?.models || [];
+                return {
+                    totalMsgs: msgs.length,
+                    recentMsgs: msgs.slice(-10).map((m: any) => ({
+                        id: m.id?._serialized,
+                        type: m.type,
+                        from: m.from?._serialized || m.from,
+                        mediaStage: m.mediaData?.mediaStage,
+                        hasMediaBlob: !!m.mediaData?.mediaBlob,
+                        hasRenderableUrl: !!m.mediaData?.renderableUrl,
+                        renderableUrl: m.mediaData?.renderableUrl ? String(m.mediaData.renderableUrl).substring(0, 35) : null,
+                        directPath: !!(m.directPath || m.mediaData?.directPath),
+                        filehash: !!(m.filehash || m.mediaData?.filehash),
+                        mediaKey: !!(m.mediaKey || m.mediaData?.mediaKey),
+                    }))
+                };
+            });
+            return res.json(result);
+        } catch (e: any) {
+            return res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.get('/api/debug/wa-test-download', async (req, res) => {
+        try {
+            if (!whatsappClient?.pupPage) return res.json({ error: "no pupPage" });
+            const result = await whatsappClient.pupPage.evaluate(async () => {
+                const msgs = (window as any).Store?.Msg?.models || [];
+                const pttMsg = msgs.slice().reverse().find((m: any) => m.type === 'ptt' || m.type === 'audio');
+                if (!pttMsg) return { error: "No ptt message found in Store.Msg.models", totalMsgs: msgs.length };
+                
+                const logs: string[] = [];
+                logs.push(`Found PTT msg: ${pttMsg.id?._serialized}`);
+                logs.push(`type: ${pttMsg.type}, mimetype: ${pttMsg.mimetype}`);
+                logs.push(`mediaStage: ${pttMsg.mediaData?.mediaStage}`);
+                logs.push(`renderableUrl: ${pttMsg.mediaData?.renderableUrl}`);
+                logs.push(`mediaBlob: ${!!pttMsg.mediaData?.mediaBlob}`);
+
+                // Check DownloadManager
+                try {
+                    const dm = (window as any).Store?.DownloadManager;
+                    if (dm && dm.downloadAndMaybeDecrypt) {
+                        logs.push("DownloadManager.downloadAndMaybeDecrypt exists!");
+                        const decrypted = await dm.downloadAndMaybeDecrypt({
+                            directPath: pttMsg.directPath || pttMsg.mediaData?.directPath,
+                            encFilehash: pttMsg.encFilehash || pttMsg.mediaData?.encFilehash,
+                            filehash: pttMsg.filehash || pttMsg.mediaData?.filehash,
+                            mediaKey: pttMsg.mediaKey || pttMsg.mediaData?.mediaKey,
+                            mediaKeyTimestamp: pttMsg.mediaKeyTimestamp || pttMsg.mediaData?.mediaKeyTimestamp,
+                            type: pttMsg.type,
+                            signal: (new AbortController).signal
+                        });
+                        logs.push(`DownloadManager decrypted: byteLength=${decrypted?.byteLength}`);
+                    } else {
+                        logs.push("DownloadManager does not exist!");
+                    }
+                } catch (dmErr: any) {
+                    logs.push(`DownloadManager error: ${dmErr?.message || dmErr}`);
+                }
+
+                // Check pttMsg.downloadMedia
+                try {
+                    if (typeof pttMsg.downloadMedia === 'function') {
+                        logs.push("Calling pttMsg.downloadMedia()...");
+                        await pttMsg.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1 });
+                        logs.push(`After downloadMedia: mediaStage=${pttMsg.mediaData?.mediaStage}, renderableUrl=${pttMsg.mediaData?.renderableUrl}`);
+                    } else {
+                        logs.push("pttMsg.downloadMedia is NOT a function");
+                    }
+                } catch (dm2Err: any) {
+                    logs.push(`pttMsg.downloadMedia error: ${dm2Err?.message || dm2Err}`);
+                }
+
+                // Check fetch renderableUrl
+                if (pttMsg.mediaData?.renderableUrl) {
+                    try {
+                        const resp = await fetch(pttMsg.mediaData.renderableUrl);
+                        const b = await resp.blob();
+                        logs.push(`fetch(renderableUrl) success: blob size=${b.size}`);
+                    } catch (fErr: any) {
+                        logs.push(`fetch(renderableUrl) error: ${fErr?.message || fErr}`);
+                    }
+                }
+
+                return { logs };
+            });
+            return res.json(result);
+        } catch (e: any) {
+            return res.status(500).json({ error: e.message });
+        }
     });
 
     app.get('/api/debug/wa-click-modal', async (req, res) => {
