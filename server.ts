@@ -1905,8 +1905,10 @@ function syncVolumeToLocal() {
         if (fs.existsSync(persistentVolumePath)) {
             const hasVolumeSession = fs.existsSync(path.join(persistentVolumePath, 'session-client-one'));
             if (hasVolumeSession) {
-                try { execSync(`find "${persistentVolumePath}" -name "Singleton*" -delete || true`); } catch {}
+                try { execSync(`find "${persistentVolumePath}" -name "Singleton*" -delete -o -name "LOCK" -delete || true`); } catch {}
                 execSync(`cp -rf "${persistentVolumePath}"/* "${localSessionPath}/" 2>/dev/null || true`);
+                try { execSync(`find "${localSessionPath}" -name "Singleton*" -delete -o -name "LOCK" -delete || true`); } catch {}
+                try { execSync(`chmod -R 777 "${localSessionPath}" || true`); } catch {}
                 console.log("[WhatsApp Auth Bridge] Successfully loaded session from volume into native /tmp container storage!");
             }
         }
@@ -1935,8 +1937,8 @@ function syncLocalToVolume() {
                 }
                 // Copy session to persistent volume, preserving local active files
                 execSync(`cp -rf "${localSessionPath}"/* "${persistentVolumePath}/" 2>/dev/null || true`);
-                // ONLY strip Singleton lock files from the destination volume copy, NEVER touch the active local runtime files!
-                try { execSync(`find "${persistentVolumePath}" -name "Singleton*" -delete || true`); } catch {}
+                // ONLY strip lock files from the destination volume copy, NEVER touch the active local runtime files!
+                try { execSync(`find "${persistentVolumePath}" -name "Singleton*" -delete -o -name "LOCK" -delete || true`); } catch {}
                 console.log("[WhatsApp Auth Bridge] Successfully synced native local session to Railway volume!");
             }
         }
@@ -1968,7 +1970,9 @@ function cleanAllChromiumLocks() {
                     } else if (
                         entry.name.startsWith('Singleton') ||
                         entry.name.endsWith('.lock') ||
-                        entry.name === 'parent._lock'
+                        entry.name === 'parent._lock' ||
+                        entry.name === 'LOCK' ||
+                        entry.name.toUpperCase() === 'LOCK'
                     ) {
                         try {
                             fs.unlinkSync(fullPath);
