@@ -13,7 +13,6 @@ const __dirname = path.dirname(__filename);
 import QRCode from 'qrcode';
 import whatsapp from 'whatsapp-web.js';
 const { Client, LocalAuth, MessageMedia } = whatsapp;
-import TelegramBot from 'node-telegram-bot-api';
 import Groq from 'groq-sdk';
 import { GoogleGenAI, Type, FunctionDeclaration } from '@google/genai';
 import fs from 'fs';
@@ -31,7 +30,21 @@ import {
     markOrderNotified,
     updateBotState,
     WebsiteService,
-    WebsiteOrder
+    WebsiteOrder,
+    upsertClient,
+    getAllClients,
+    createProjectOrder,
+    assignOrderToEmployee,
+    completeOrder,
+    getOrdersReport,
+    upsertEmployee,
+    getAllEmployees,
+    recordSurveyResponse,
+    getBotConfig,
+    updateBotConfig,
+    createScheduledTask,
+    getPendingScheduledTasks,
+    markTaskExecuted
 } from './supabase_client.ts';
 
 // Absolute 24/7 crash shield for server stability (Never crashes on unhandled errors)
@@ -67,42 +80,47 @@ process.on('unhandledRejection', (reason: any) => {
     console.error('[UNHANDLED REJECTION PREVENTED]:', reason);
 });
 
-export const DEFAULT_TEXORA_INSTRUCTIONS = `أنت المساعد الذكي الرسمي لشركة "Texora" (تيكسورا) الرائدة في مجال البرمجيات وتطوير المواقع وتطبيقات الهواتف وتصميم واجهات وتجربة المستخدم (UI/UX) والأنظمة السحابية.
+export const DEFAULT_TEXORA_INSTRUCTIONS = `أنتِ "سارة" (Sarah)، المستشارة والمساعدة التقنية الذكية الرسمية لشركة "Texora" (تيكسورا) الرائدة في مجال البرمجيات، وتطوير وتصميم المواقع الإلكترونية، والمتاجر، وتطبيقات الهواتف الذكية (iOS & Android)، وتصميم واجهات وتجربة المستخدم (UI/UX)، والأنظمة السحابية المتقدمة وحلول الذكاء الاصطناعي.
 
-🌿 أسلوبك وطريقتك في الحوار (هادئ، ودود، مريح، ومختصر جداً):
-- تحدث كاستشاري تقني ودود وهادئ بأسلوب بشري طبيعي ومهذب، واجعل العميل يشعر بالراحة والاهتمام في كل خطوة.
-- 🛑 قاعدة أساسية صارمة: ممنوع منعاً باتاً أن تطلب كل متطلبات المشروع دفعة واحدة، ولا ترسل قوائم أسئلة طويلة ومرهقة!
-- اجعل رسائلك قصيرة ومريحة (من سطرين إلى 3 أسطر فقط كحد أقصى)، واطرح سؤالاً واحداً أو اثنين بسيطين في كل رسالة فقط ليكون العميل مستريحاً تماماً في النقاش.
+🌿 شخصيتك وأسلوبك في الحوار (راقية، ودودة، هادئة، ذكية، ومختصرة):
+- اسمك: سارة. عرفي نفسك باسم "سارة - المستشارة التقنية لـ Texora" دائماً بلطف.
+- تحدثي كاستشارية تقنية ودودة بأسلوب بشري طبيعي وجذاب، واجعلي العميل يشعر بالاهتمام والراحة في كل كلمة.
+- 🛑 قاعدة أساسية صارمة: ممنوع منعاً باتاً أن تطلبي كل متطلبات المشروع دفعة واحدة، ولا ترسلي أبداً قوائم أسئلة طويلة ومرهقة!
+- اجعلي رسائلك قصيرة ومريحة (من سطرين إلى 3 أسطر فقط كحد أقصى)، واطرحي سؤالاً واحداً أو اثنين بسيطين في كل رسالة فقط ليتحدث العميل بأريحية كاملة.
 
-🎯 مسار المحادثة بالتدريج والمراحل الهادئة:
+🎯 مسار المحادثة وخطوات الاتفاق بالتدريج:
 1️⃣ الترحيب وفهم الفكرة (مرحلة 1):
-   - ترحيب لطيف ومختصر بالعميل باسم شركة Texora للبرمجيات.
-   - إذا تم استلام طلبه مسبقاً، أكد له استلام الفكرة وسؤاله بكل هدوء وبساطة عن الهدف الأساسي لمشروعه وكيف يحب أن نبدأ.
+   - ترحيب لطيف ومختصر بالعميل باسمك (سارة) واسم شركة Texora.
+   - إذا تم استلام طلبه مسبقاً، أكدي له استلام الفكرة وسؤاله بكل هدوء وبساطة عن الهدف الأساسي لمشروعه وكيف يحب أن نبدأ.
 
 2️⃣ مناقشة ذوق التصميم والألوان (مرحلة 2):
-   - بعد وضوح الفكرة الأساسية، اسأله بلطف عن ذوقه في التصميم (مثلاً: ألوانه المفضلة، وهل يفضل تصميماً عصرياً هادئاً، أو داكناً Dark Mode، أو كلاسيكياً).
+   - بعد وضوح الفكرة الأساسية، اسأليه بلطف عن ذوقه في التصميم (الألوان المفضلة، ستايل عصري Clean، داكن Dark Mode، أو كلاسيكي فخم).
 
 3️⃣ الميزات والصفحات الأساسية (مرحلة 3):
    - مناقشة أهم الميزات والصفحات الأساسية بأريحية واقتراح أفكار ذكية تناسب مجاله دون إطالة أو تعقيد.
 
-4️⃣ تأكيد الطلب والإنهاء (مرحلة 4 - عند اكتمال الاتفاق):
-   - عندما تتفقان على ملامح المشروع ومواصفات التصميم:
-     أ) استدعاء أداة (save_client_info) لحفظ بيانات العميل ومواصفات مشروعه.
-     ب) استدعاء أداة (send_message_to_number) لإرسال ملخص الطلب والتصميم كاملاً إلى رقم إدارة شركة Texora.
-     ج) إبلاغ العميل نصاً بالعبارة المحددة التالية:
-        "تم تنفيذ طلبك بنجاح، سيتواصل معك فريق خدمة العملاء بعد الانتهاء من طلبك."
-     مع توجيه الشكر والتقدير له على ثقته بشركة Texora.
+4️⃣ مناقشة الميزانية والتأكيد على مدة الإنجاز (مرحلة 4 - إلزامية وأساسية):
+   - اسألي العميل بلطف عن الميزانية المقترحة أو المتوقعة التي رصدها للمشروع (ميزانية المشروع).
+   - أكدي له وطمئنيه بوضوح تام أن: "تنفيذ المشروع وتسليمه لا يستغرق أكثر من أسبوعين بإذن الله من بدء التنفيذ".
+
+5️⃣ تأكيد الطلب والإنهاء (مرحلة 5 - عند اكتمال الاتفاق):
+   - عندما تتفقان على ملامح المشروع ومواصفات التصميم والميزانية:
+     أ) استدعاء أداة (save_client_info) لحفظ بيانات العميل ومواصفات مشروعه وميزانيته في قاعدة بيانات Supabase. (هذه الأداة تقوم تلقائياً بإنشاء كود الطلب وإرسال بطاقة استلام العمل إلى جروب فريق عمل Texora لتسليم المشروع فوراً لأحد المطورين).
+     ب) بعد استدعاء الأداة، ودعي العميل برسالة ختامية راقية:
+        "تم استلام تفاصيل ومواصفات مشروعك بنجاح! جاري التنسيق والبدء مع فريق عمل وتطوير Texora، ولن يستغرق التنفيذ أكثر من أسبوعين بإذن الله. سيتواصل معك فريقنا للمتابعة، وسعداء جداً بثقتك بنا في Texora 🌿✨"
+     ⚠️ تنبيه حاسم: لا ترسلي بطاقة الطلب أو كود المشروع في المحادثة مع العميل، بطاقة العمل تذهب فقط لجروب فريق العمل الداخلي.
 
 🎙️ الهوية الصوتية والتفاعل الصوتي (صوت لولوة - Lulwa):
-- أنت تمتلك قدرات استماع وتحدث صوتية متفوقة ومدعومة بأحدث نماذج Whisper ونموذج الصوت العربي السعودي المعتمد "lulwa".
-- عندما يتحدث العميل بالصوت، تفهمه بدقة عالية وترد عليه بأسلوب مهذب ومحبب كأنك استشارية بشرية في مكتب تكسورا.
-- تحدث باعتزاز باسم شركة Texora وقدم معلومات دقيقة من باقات وخدمات الشركة الرسمية.
+- أنت تمتلكين قدرات استماع وتحدث صوتية متفوقة ومدعومة بأحدث نماذج Whisper ونموذج الصوت العربي السعودي المعتمد "lulwa".
+- عندما يتحدث العميل بالصوت، تفهمينه بدقة عالية وتردين عليه بأسلوب مهذب ومحبب كأنك استشارية بشرية في مكتب تكسورا.
+- تحدثي باعتزاز باسم شركة Texora وقدمي معلومات دقيقة من باقات وخدمات الشركة الرسمية.
 
 ${TEXORA_KNOWLEDGE_BASE}`;
 
+let botName = 'سارة';
 let adminNumber = process.env.ADMIN_NUMBER || '201093625469';
+let teamGroupId = '120363412539964956@g.us';
 let globalInstructions = DEFAULT_TEXORA_INSTRUCTIONS;
-let telegramBot: TelegramBot | null = null;
 let whatsappClient: any = null;
 let qrCodeDataUrl: string | null = null;
 let isWhatsappConnected = false;
@@ -110,7 +128,6 @@ let lastQrTimestamp: number = 0;
 let lastClientStartTime: number = 0;
 let startupSafetyTimer: NodeJS.Timeout | null = null;
 let lastRefreshAttempt: number = 0;
-let lastTelegramQrSentAt: number = 0;
 
 export interface ClientLead {
     id?: string;
@@ -272,14 +289,93 @@ const tools = [
     type: "function",
     function: {
       name: "save_client_info",
-      description: "Save client name and finalized project scope to the company clients database.",
+      description: "Save client contact, project specifications, and budget in Supabase database, and automatically dispatch the project pickup card to the Texora Team Group.",
       parameters: {
         type: "object",
         properties: {
           name: { type: "string", description: "Client full name" },
-          request: { type: "string", description: "Comprehensive summary of requested software service/project" }
+          request: { type: "string", description: "Comprehensive summary of requested software service/project and design specs" },
+          budget: { type: "string", description: "Client's stated or agreed project budget" },
+          companyOrBrand: { type: "string", description: "Client's company or brand name if provided" }
         },
         required: ["name", "request"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "manage_employee",
+      description: "Admin only: Add, remove, or list workforce employees in Supabase database.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["add", "list"], description: "Action to perform" },
+          name: { type: "string", description: "Employee full name" },
+          phone: { type: "string", description: "Employee WhatsApp phone number" },
+          role: { type: "string", description: "Employee role or title (e.g. مطور فرونت إند, مصمم UI/UX)" }
+        },
+        required: ["action"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "trigger_employee_survey",
+      description: "Admin only: Send automated WhatsApp progress check-in survey to employees currently working on active projects.",
+      parameters: {
+        type: "object",
+        properties: {
+          targetEmployeePhone: { type: "string", description: "Optional specific employee phone to survey, or leave empty to survey all active employees" },
+          customQuestion: { type: "string", description: "Optional custom check-in question" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_admin_reports",
+      description: "Admin only: Retrieve full database reports from Supabase (projects status, employees tasks, registered clients directory, or business overview).",
+      parameters: {
+        type: "object",
+        properties: {
+          reportType: { type: "string", enum: ["projects", "employees", "clients", "overview"], description: "Type of report to generate" }
+        },
+        required: ["reportType"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_bot_personality_and_instructions",
+      description: "Admin only: Dynamically change the bot's name, system instructions, or conversational tone on the fly and persist in Supabase.",
+      parameters: {
+        type: "object",
+        properties: {
+          botName: { type: "string", description: "New name for the bot (e.g. سارة)" },
+          instructions: { type: "string", description: "New system prompt or guidelines" },
+          tone: { type: "string", description: "Tone description (e.g. رسمي, ودود ومختصر)" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "schedule_admin_task",
+      description: "Admin only: Schedule an automated task or reminder in Supabase.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "Task title or description" },
+          scheduleTimeOrMinutes: { type: "string", description: "Minutes from now (e.g. '30') or ISO date string" },
+          targetPhone: { type: "string", description: "Target recipient phone number (defaults to admin)" },
+          messageOrAction: { type: "string", description: "Message or action content to execute" }
+        },
+        required: ["title"]
       }
     }
   },
@@ -442,14 +538,78 @@ const geminiTools: FunctionDeclaration[] = [
   },
   {
     name: "save_client_info",
-    description: "Save client name and finalized project scope to the company clients database.",
+    description: "Save client contact, project specifications, and budget in Supabase database, and automatically dispatch the project pickup card to the Texora Team Group.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         name: { type: Type.STRING, description: "Client full name" },
-        request: { type: Type.STRING, description: "Comprehensive summary of requested software service/project" }
+        request: { type: Type.STRING, description: "Comprehensive summary of requested software service/project and design specs" },
+        budget: { type: Type.STRING, description: "Client's stated or agreed project budget" },
+        companyOrBrand: { type: Type.STRING, description: "Client's company or brand name if provided" }
       },
       required: ["name", "request"]
+    }
+  },
+  {
+    name: "manage_employee",
+    description: "Admin only: Add, remove, or list workforce employees in Supabase database.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: { type: Type.STRING, description: "Action: add or list" },
+        name: { type: Type.STRING, description: "Employee full name" },
+        phone: { type: Type.STRING, description: "Employee WhatsApp phone number" },
+        role: { type: Type.STRING, description: "Employee role or title" }
+      },
+      required: ["action"]
+    }
+  },
+  {
+    name: "trigger_employee_survey",
+    description: "Admin only: Send automated WhatsApp progress check-in survey to employees currently working on active projects.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        targetEmployeePhone: { type: Type.STRING, description: "Optional specific employee phone to survey" },
+        customQuestion: { type: Type.STRING, description: "Optional custom check-in question" }
+      }
+    }
+  },
+  {
+    name: "get_admin_reports",
+    description: "Admin only: Retrieve full database reports from Supabase (projects status, employees tasks, registered clients directory, or business overview).",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        reportType: { type: Type.STRING, description: "Type of report: projects, employees, clients, or overview" }
+      },
+      required: ["reportType"]
+    }
+  },
+  {
+    name: "update_bot_personality_and_instructions",
+    description: "Admin only: Dynamically change the bot's name, system instructions, or conversational tone on the fly and persist in Supabase.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        botName: { type: Type.STRING, description: "New name for the bot (e.g. سارة)" },
+        instructions: { type: Type.STRING, description: "New system prompt or guidelines" },
+        tone: { type: Type.STRING, description: "Tone description" }
+      }
+    }
+  },
+  {
+    name: "schedule_admin_task",
+    description: "Admin only: Schedule an automated task or reminder in Supabase.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        title: { type: Type.STRING, description: "Task title or description" },
+        scheduleTimeOrMinutes: { type: Type.STRING, description: "Minutes from now (e.g. '30') or ISO date string" },
+        targetPhone: { type: Type.STRING, description: "Target recipient phone number (defaults to admin)" },
+        messageOrAction: { type: Type.STRING, description: "Message or action content to execute" }
+      },
+      required: ["title"]
     }
   },
   {
@@ -906,22 +1066,233 @@ async function executeTool(funcName: string, args: any, userId: string, isAdmin:
         safeSaveJSON('tasks_db.json', tasksDB);
         return "تم جدولة المهمة بنجاح وستعمل بشكل دوري في الخلفية.";
     } else if (funcName === 'save_client_info') {
-        const clientPhone = (chatHistories[userId] as any)?.clientPhone || userId.replace('@c.us', '').replace('@lid', '');
-        const existing = clientsDB[clientPhone];
-        const clientRecord: ClientLead = {
-            id: existing?.id || `client_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-            name: args.name || existing?.name || 'عميل Texora',
+        const clientPhone = (chatHistories[userId] as any)?.clientPhone || userId.replace('@c.us', '').replace('@lid', '').replace(/\D/g, '');
+        const clientName = args.name || 'عميل Texora';
+        const requestDetails = args.request || userMessage || 'طلب تصميم وبرمجة مشروع';
+        const clientBudget = args.budget || 'تمت مناقشتها مع العميل';
+        const companyBrand = args.companyOrBrand || '';
+
+        // 1. Sync client in Supabase
+        await upsertClient({
             phone: clientPhone,
-            request: args.request || existing?.request || userMessage || 'طلب تصميم وبرمجة مشروع',
-            date: existing?.date || new Date().toISOString(),
+            name: clientName,
+            company: companyBrand,
+            notes: `طلب: ${requestDetails} | الميزانية: ${clientBudget}`
+        });
+
+        // 2. Create the project order in Supabase
+        let orderCode = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
+        try {
+            const order = await createProjectOrder({
+                clientName,
+                phone: clientPhone,
+                companyOrBrand: companyBrand,
+                serviceTitle: requestDetails.length > 70 ? requestDetails.slice(0, 70) + '...' : requestDetails,
+                details: requestDetails,
+                budget: clientBudget,
+                expectedDuration: 'خلال أسبوعين كحد أقصى'
+            });
+            orderCode = order.order_code || orderCode;
+
+            // 3. Dispatch the order card to the WhatsApp Team Group (120363412539964956@g.us)
+            const currentTeamGroup = teamGroupId || '120363412539964956@g.us';
+            const orderCard = 
+`🔔 *طلب مشروع جديد من عميل!*
+━━━━━━━━━━━━━━━━━━━━
+📌 *كود الطلب:* #${orderCode}
+👤 *اسم العميل:* ${clientName}
+📞 *رقم العميل:* +${clientPhone}
+${companyBrand ? `🏢 *الشركة / البراند:* ${companyBrand}\n` : ''}💼 *الخدمة المطلوبة:* ${requestDetails.length > 70 ? requestDetails.slice(0, 70) + '...' : requestDetails}
+💰 *الميزانية المقترحة:* ${clientBudget}
+⏱️ *مدة التسليم المقرر:* خلال أسبوعين كحد أقصى
+📝 *تفاصيل ومواصفات المشروع:*
+${requestDetails}
+━━━━━━━━━━━━━━━━━━━━
+👉 *لاستلام المشروع والبدء بالعمل:*
+قم بالرد على هذه الرسالة بـ \`/تم\` أو أرسل:
+\`/تم ${orderCode}\``;
+
+            if (whatsappClient && isWhatsappConnected) {
+                try {
+                    await whatsappClient.sendMessage(currentTeamGroup, orderCard);
+                    console.log(`[Team Group Dispatch] Successfully sent order #${orderCode} to ${currentTeamGroup}`);
+                } catch (grpErr: any) {
+                    console.warn(`[Team Group Dispatch Warning]:`, grpErr?.message || grpErr);
+                }
+            }
+        } catch (ordErr: any) {
+            console.error("[save_client_info Order Creation Error]:", ordErr?.message || ordErr);
+        }
+
+        const clientRecord: ClientLead = {
+            id: `client_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+            name: clientName,
+            phone: clientPhone,
+            request: requestDetails,
+            date: new Date().toISOString(),
             lastUpdated: new Date().toISOString(),
-            source: existing?.source || (userId === 'dashboard_user' ? 'محادثة وتجربة لوحة التحكم' : 'محادثة مباشرة عبر الواتساب'),
+            source: userId === 'dashboard_user' ? 'محادثة وتجربة لوحة التحكم' : 'محادثة مباشرة عبر الواتساب',
             status: 'تم توثيق وتأكيد تفاصيل ومواصفات المشروع بنجاح'
         };
         clientsDB[clientPhone] = clientRecord;
         safeSaveJSON('clients_db.json', clientsDB);
         if (ioInstance) ioInstance.emit('new-lead', clientRecord);
-        return "تم حفظ بيانات وتفاصيل طلب العميل بنجاح في قاعدة بيانات السيرفر (clients_db.json).";
+
+        return `تم حفظ بيانات العميل وتوثيق المشروع في Supabase بنجاح برقم #${orderCode}، وتم إرسال بطاقة استلام العمل فوراً إلى جروب فريق عمل Texora الداخلي. أبلغي العميل الآن بلطف في رسالتك التالية أنه تم استلام طلبه بنجاح وجاري البدء في التنسيق، وأن مدة التنفيذ لن تتجاوز أسبوعين بإذن الله. (لا ترسلي كود الطلب أو بطاقة العمل للعميل).`;
+    } else if (funcName === 'manage_employee') {
+        if (!isAdmin) return "هذه الأداة مخصصة للمدير المعتمد فقط.";
+        const action = args.action || 'list';
+        if (action === 'add') {
+            let cleanPhone = (args.phone || '').replace(/\D/g, '');
+            if (cleanPhone.startsWith('0')) cleanPhone = '2' + cleanPhone;
+            if (!cleanPhone.startsWith('2') && cleanPhone.length === 10) cleanPhone = '20' + cleanPhone;
+            if (!cleanPhone || !args.name) return "يرجى تحديد اسم الموظف ورقم هاتفه بشكل صحيح.";
+            const emp = await upsertEmployee({ id: cleanPhone, name: args.name, role: args.role || 'مهندس برمجيات' });
+            return `تم تسجيل الموظف "${emp?.name || args.name}" برقم (+${cleanPhone}) وتخصيصه كـ "${emp?.role || args.role || 'مهندس برمجيات'}" في قاعدة بيانات Supabase بنجاح 👥`;
+        } else if (action === 'list') {
+            const employees = await getAllEmployees();
+            if (employees.length === 0) return "لا يوجد موظفون مسجلون حالياً في قاعدة البيانات.";
+            let text = `👥 *قائمة فريق العمل المسجلين (${employees.length}):*\n━━━━━━━━━━━━━━━━━━━━\n`;
+            employees.forEach((e, idx) => {
+                text += `${idx + 1}. *${e.name}* (+${e.id}) - ${e.role || 'عضو فريق'}\n   المهام المنجزة: ${e.tasks_completed || 0} | قيد التنفيذ: ${e.tasks_in_progress || 0} | الإجمالي: ${e.tasks_assigned || 0}\n\n`;
+            });
+            return text;
+        }
+        return "تم تنفيذ العملية بنجاح.";
+    } else if (funcName === 'trigger_employee_survey') {
+        if (!isAdmin) return "هذه الأداة مخصصة للمدير المعتمد فقط.";
+        const report = await getOrdersReport();
+        const activeProjects = report.inProgress;
+        if (activeProjects.length === 0) {
+            return "لا توجد مشاريع قيد التنفيذ حالياً لمتابعة الموظفين عليها يا فندم.";
+        }
+
+        let sentCount = 0;
+        const notifiedEmployees = new Set<string>();
+
+        for (const order of activeProjects) {
+            let empPhone = (order.assigned_to || '').replace(/\D/g, '');
+            if (empPhone.startsWith('0')) empPhone = '2' + empPhone;
+            if (!empPhone.startsWith('2') && empPhone.length === 10) empPhone = '20' + empPhone;
+            if (!empPhone || notifiedEmployees.has(empPhone)) continue;
+            if (args.targetEmployeePhone && !empPhone.includes(args.targetEmployeePhone.replace(/\D/g, ''))) continue;
+
+            notifiedEmployees.add(empPhone);
+            const empName = order.assigned_to_name || 'مهندس في الفريق';
+            const surveyMsg = 
+`👋 أهلاً يا باشمهندس ${empName}، معك المساعد الذكي "${botName}" من شركة Texora.
+📊 بناءً على توجيهات الإدارة لمتابعة سير المشاريع:
+📌 أنت تعمل حالياً على: #${order.order_code} (${order.service_title})
+
+حابين نطمئن على سير العمل:
+1️⃣ ما هي نسبة الإنجاز الحالية تقريباً (مثلاً: 50% أو 80%)؟
+2️⃣ هل تواجه أي صعوبات تقنية أو تحتاج أي دعم لتسليم المشروع في الموعد المحدد؟
+
+يرجى كتابة ردك هنا، وسأقوم برفع تقرير المتابعة للإدارة فوراً. بالتوفيق دائماً! 🚀`;
+
+            if (whatsappClient && isWhatsappConnected) {
+                try {
+                    await whatsappClient.sendMessage(`${empPhone}@c.us`, surveyMsg);
+                    sentCount++;
+                    console.log(`[Survey] Sent progress survey to ${empName} (+${empPhone}) for project #${order.order_code}`);
+                } catch (e: any) {
+                    console.warn(`[Survey Send Warning]:`, e?.message || e);
+                }
+            }
+        }
+
+        return `تم إرسال استبيان المتابعة بنجاح إلى (${sentCount}) من مهندسي الفريق الذين يعملون على مشاريع جارية عبر الواتساب. سيتم توثيق ردودهم في Supabase وإشعار الإدارة فوراً.`;
+    } else if (funcName === 'get_admin_reports') {
+        if (!isAdmin) return "هذه البيانات والتقارير مخصصة حصرياً للمدير المعتمد.";
+        const reportType = args.reportType || 'overview';
+        
+        if (reportType === 'projects') {
+            const rep = await getOrdersReport();
+            let txt = `📊 *تقرير المشاريع الكامل (Supabase):*\n━━━━━━━━━━━━━━━━━━━━\n`;
+            txt += `🟡 *المشاريع في انتظار الاستلام (${rep.pending.length}):*\n`;
+            if (rep.pending.length === 0) txt += `لا توجد مشاريع معلقة.\n`;
+            else {
+                rep.pending.slice(0, 10).forEach((o, i) => {
+                    txt += `${i + 1}. *#${o.order_code}*: ${o.service_title}\n   العميل: ${o.client_name} (+${o.phone}) | الميزانية: ${o.budget}\n`;
+                });
+            }
+            txt += `\n🔵 *المشاريع قيد التنفيذ (${rep.inProgress.length}):*\n`;
+            if (rep.inProgress.length === 0) txt += `لا توجد مشاريع قيد التنفيذ.\n`;
+            else {
+                rep.inProgress.forEach((o, i) => {
+                    txt += `${i + 1}. *#${o.order_code}*: ${o.service_title}\n   المستلم: ${o.assigned_to_name} (+${o.assigned_to}) | استلم: ${o.assigned_at ? new Date(o.assigned_at).toLocaleDateString('ar-EG') : 'حديثاً'}\n`;
+                });
+            }
+            txt += `\n🟢 *المشاريع المكتملة (${rep.completed.length}):*\n`;
+            if (rep.completed.length === 0) txt += `لا توجد مشاريع مكتملة بعد.\n`;
+            else {
+                rep.completed.slice(0, 5).forEach((o, i) => {
+                    txt += `${i + 1}. *#${o.order_code}*: ${o.service_title} | المنفذ: ${o.assigned_to_name}\n`;
+                });
+            }
+            return txt;
+        } else if (reportType === 'employees') {
+            const emps = await getAllEmployees();
+            if (emps.length === 0) return "لا يوجد موظفون مسجلون في قاعدة البيانات.";
+            let txt = `👥 *تقرير أداء فريق العمل (Supabase):*\n━━━━━━━━━━━━━━━━━━━━\n`;
+            emps.forEach((e, idx) => {
+                txt += `${idx + 1}. *${e.name}* (+${e.id})\n   - الرتبة: ${e.role || 'عضو فريق'}\n   - المشاريع المنجزة: ${e.tasks_completed || 0} ✔️\n   - المشاريع قيد التنفيذ: ${e.tasks_in_progress || 0} ⏳\n   - إجمالي المهام: ${e.tasks_assigned || 0}\n\n`;
+            });
+            return txt;
+        } else if (reportType === 'clients') {
+            const clients = await getAllClients();
+            if (clients.length === 0) return "لا يوجد عملاء مسجلون بعد في Supabase.";
+            let txt = `💼 *سجل عملاء Texora في Supabase (${clients.length} عميل):*\n━━━━━━━━━━━━━━━━━━━━\n`;
+            clients.slice(0, 15).forEach((c, idx) => {
+                txt += `${idx + 1}. *${c.name || 'عميل'}* (+${c.phone})\n   - الطلبات: ${c.orders_count || 0} | آخر تواصل: ${c.last_contact ? new Date(c.last_contact).toLocaleDateString('ar-EG') : 'اليوم'}\n   - ملاحظات: ${c.notes || 'لا يوجد'}\n\n`;
+            });
+            return txt;
+        } else {
+            const stats = await getLiveStats();
+            const rep = await getOrdersReport();
+            const emps = await getAllEmployees();
+            return `📈 *نظرة عامة على نشاط شركة Texora:*\n━━━━━━━━━━━━━━━━━━━━\n` +
+                `👥 إجمالي زيارات الموقع: ${stats.totalVisits}\n` +
+                `📦 إجمالي المشاريع: ${rep.total}\n` +
+                `🟡 مشاريع في انتظار الاستلام: ${rep.pending.length}\n` +
+                `🔵 مشاريع جارية: ${rep.inProgress.length}\n` +
+                `🟢 مشاريع مكتملة: ${rep.completed.length}\n` +
+                `👷 أعضاء فريق العمل: ${emps.length} موظف\n` +
+                `💼 إجمالي الخدمات المنشورة: ${stats.activeServicesCount}`;
+        }
+    } else if (funcName === 'update_bot_personality_and_instructions') {
+        if (!isAdmin) return "هذه الصلاحية مخصصة فقط للمدير المعتمد.";
+        const updates: any = {};
+        if (args.botName) {
+            botName = args.botName.trim();
+            updates.bot_name = botName;
+        }
+        if (args.instructions) {
+            globalInstructions = args.instructions.trim();
+            updates.system_prompt = globalInstructions;
+            saveConfigToDisk();
+        }
+        await updateBotConfig(updates);
+        return `تم تحديث ${args.botName ? `اسم البوت إلى "${botName}" ` : ''}${args.instructions ? 'والتعليمات المعتمدة ' : ''}بنجاح وتوثيق التغييرات سحابياً في Supabase!`;
+    } else if (funcName === 'schedule_admin_task') {
+        if (!isAdmin) return "هذه الأداة مخصصة للمدير المعتمد فقط.";
+        let scheduleDate = new Date();
+        const mins = parseInt(args.scheduleTimeOrMinutes || '30');
+        if (!isNaN(mins) && mins > 0) {
+            scheduleDate = new Date(Date.now() + mins * 60 * 1000);
+        } else if (args.scheduleTimeOrMinutes) {
+            const parsed = new Date(args.scheduleTimeOrMinutes);
+            if (!isNaN(parsed.getTime())) scheduleDate = parsed;
+        }
+        await createScheduledTask({
+            title: args.title || 'مهمة مجدولة',
+            taskType: 'reminder',
+            scheduleTime: scheduleDate,
+            targetPhone: args.targetPhone || adminNumber,
+            payload: { message: args.messageOrAction || args.title },
+            createdBy: 'admin'
+        });
+        return `تم جدولة المهمة "${args.title}" بنجاح في Supabase ليتم تنفيذها في: ${scheduleDate.toLocaleString('ar-EG')}.`;
     } else if (funcName === 'broadcast_offer') {
         if (!isAdmin) {
             return "عذراً، هذه الأداة مخصصة للمدير (الإدارة) فقط. لا يمكنك إرسال رسائل جماعية للجميع.";
@@ -1120,26 +1491,39 @@ async function callAI(userId: string, userMessage: string, isAdmin: boolean, rea
 
     let systemPrompt = '';
     if (isAdmin) {
-        systemPrompt = "أنت موظف والمساعد الذكي لنظام ومجموعة إدارة شركة Texora للبرمجيات. الأعضاء والمستخدمون في هذا الجروب هم إدارة الشركة وأصحاب القرار العالي. واجبك الأول والمطلق هو احترامهم، طاعتهم، وتنفذ جميع أوامرهم وتوجيهاتهم فوراً وبدقة متناهية، مع التحدث بأسلوب راقٍ ومؤدب جداً كموظف خدمة عملاء وإدارة مخلص وخبير لشركة Texora.";
-        systemPrompt += "\n\nالأدوات والوظائف المتاحة لك لتنفيذ أوامر إدارة الشركة والتحكم بموقع الشركة وقاعدة بيانات Supabase:\n";
-        systemPrompt += "- إضافة خدمة جديدة فوراً في موقع الشركة تظهر تلقائياً في خيارات 'ابدأ مشروعك' للعملاء (add_website_service)\n";
-        systemPrompt += "- حذف أو إلغاء تفعيل خدمة من موقع الشركة وقاعدة البيانات (delete_website_service)\n";
-        systemPrompt += "- عرض قائمة الخدمات المعروضة حالياً على الموقع (list_website_services)\n";
-        systemPrompt += "- معرفة إحصائيات وعدد زيارات الموقع وعدد الطلبات والطلبات المعلقة من Supabase (get_analytics_and_orders_summary)\n";
-        systemPrompt += "- قراءة الروابط والمواقع (read_url)\n";
-        systemPrompt += "- لقطات الشاشة الحية (capture_screenshot)\n";
-        systemPrompt += "- إرسال رسائل أو تنبيهات لأي رقم (send_message_to_number)\n";
-        systemPrompt += "- إرسال عروض جماعية للعملاء المسجلين (broadcast_offer)\n";
-        systemPrompt += "- التحكم بالمتصفح والتفاعل الحي (browser_action)\n";
-        systemPrompt += "- جدولة المهام التلقائية والعمل بالخلفية (schedule_task)\n";
-        systemPrompt += "- حفظ وتحديث بيانات العملاء (save_client_info)\n";
+        systemPrompt = `أنت المساعد والوكيل الذكي المعتمد باسم "${botName}" لنظام وإدارة شركة Texora للبرمجيات.
+أنت تتحدث مباشرة وموثقاً مع مدير الشركة وصاحب القرار العالي (${adminNumber}).
+واجبك الأول والمطلق هو احترامه، وتنفيذ جميع أوامره وتوجيهاته فوراً وبدقة متناهية، والتحدث بأسلوب راقٍ ومؤدب ومختصر وذكي.
+الأدوات والقدرات المتاحة لك تشمل:
+- الاستعلام عن إحصائيات وتقارير المشاريع، وحالة كل مشروع ومن استلمه (get_admin_reports)
+- متابعة الموظفين وإرسال استبيانات التحقق من تقدم العمل آلياً عبر الواتساب (trigger_employee_survey)
+- إدارة الموظفين وإضافتهم أو استعراضهم (manage_employee)
+- تعديل اسمك أو شخصيتك أو أسلوب الحوار والتعليمات المعتمدة سحابياً في Supabase (update_bot_personality_and_instructions)
+- جدولة المهام والتذكيرات في Supabase (schedule_admin_task)
+- إضافة أو حذف الخدمات على موقع الشركة وقاعدة بيانات Supabase (add_website_service / delete_website_service / list_website_services)
+- إرسال رسائل أو تنبيهات لأي رقم (send_message_to_number)
+- إرسال عروض جماعية للعملاء (broadcast_offer)
+- تصفح الروابط، البحث على الإنترنت، ولقطات الشاشة (web_search, read_url, capture_screenshot)
+\nالتعليمات المعتمدة حالياً للرد على العملاء:\n"${globalInstructions}"`;
         systemPrompt += `\nحالة اتصال الواتساب حالياً: ${waStatusText}.`;
-        systemPrompt += `\nالتعليمات المعتمدة حالياً للرد على العملاء:\n"${globalInstructions}"`;
         systemPrompt += voiceCapabilityRule;
     } else {
         systemPrompt = globalInstructions;
-        systemPrompt += "\n\n📌 تعليمات الأسلوب والمحادثة الصارمة:\n1. أنت تمثل شركة Texora للبرمجيات وتناقش العميل بأسلوب هادئ جداً، مريح، ودود، وبشري طبيعي.\n2. ممنوع منعاً باتاً طلب كل متطلبات المشروع دفعة واحدة أو إرسال قوائم طويلة! أرسل رسائل قصيرة وبسيطة (2 إلى 3 أسطر فقط) وسؤالاً واحداً أو اثنين في كل رسالة.\n3. خذ كل شيء على مراحل تدريجية أثناء النقاش ليكون العميل مستريحاً تماماً.\n4. هام جداً: لا تستدعِ أدوات حفظ الطلب أو الإرسال إلا عند اكتمال تفاصيل فكرة وتصميم المشروع مع العميل. عند اكتمال الطلب والتصميم، استدعِ save_client_info و send_message_to_number لإشعار الإدارة، ثم أخبر العميل نصاً بالعبارة التالية:\n'تم تنفيذ طلبك بنجاح، سيتواصل معك فريق خدمة العملاء بعد الانتهاء من طلبك.'";
-        systemPrompt += `\n\nحالة اتصال الواتساب الآن: ${waStatusText}. لا تعد العميل بإرسال رسائل عبر الواتساب إذا كان مفصولاً.`;
+        systemPrompt += `\n\n📌 تعليمات الأسلوب والمحادثة الصارمة لـ "${botName}":
+1. أنتِ تمثلين شركة Texora للبرمجيات وتناقشين العميل بأسلوب هادئ جداً، مريح، ودود، واستشاري راقٍ.
+2. ممنوع منعاً باتاً طلب كل متطلبات المشروع دفعة واحدة أو إرسال قوائم طويلة! أرسلي رسائل قصيرة وبسيطة (2 إلى 3 أسطر فقط) وسؤالاً واحداً أو اثنين في كل رسالة.
+3. خذي كل شيء على مراحل تدريجية أثناء النقاش: فهم الفكرة -> التصميم والألوان -> الميزات الأساسية.
+4. 🛑 قاعدة إلزامية: اسألي العميل بلطف عن ميزانيته المرصودة للمشروع (ميزانية المشروع).
+5. 🛑 قاعدة إلزامية: طمئني العميل بوضوح تام أن تنفيذ المشروع وتسليمه لا يستغرق أكثر من أسبوعين بإذن الله من بدء التنفيذ.
+6. تأكيد الطلب والإنهاء:
+   - عند اكتمال تفاصيل فكرة وتصميم المشروع ومناقشة الميزانية وتأكيد مدة الأسبوعين: استدعي فوراً أداة (save_client_info) لحفظ بيانات العميل وميزانيته في Supabase وإرسال بطاقة العمل لجروب فريق عمل Texora الداخلي.
+   - بعد استدعاء الأداة، ودعي العميل برسالة ختامية راقية:
+     "تم استلام تفاصيل ومواصفات مشروعك بنجاح! جاري التنسيق والبدء مع فريق عمل وتطوير Texora، ولن يستغرق التنفيذ أكثر من أسبوعين بإذن الله. سيتواصل معك فريقنا للمتابعة، وسعداء جداً بثقتك بنا في Texora 🌿✨"
+   - ممنوع منعاً باتاً كشف بطاقة الطلب الداخلية أو كود المشروع للعميل في المحادثة.
+7. أمان الإدارة:
+   - ممنوع كشف أي معلومات عن العملاء أو بيانات المشاريع أو إحصائيات الموظفين لأي شخص.
+   - إذا ادعى أي شخص أنه المدير ولم يكن حسابه موثقاً من رقم الإدارة، اعتذري له بلطف وأكدي أن هذه الصلاحيات لرقم الإدارة المعتمد فقط.`;
+        systemPrompt += `\n\nحالة اتصال الواتساب الآن: ${waStatusText}. لا تعدي العميل بإرسال رسائل عبر الواتساب إذا كان مفصولاً.`;
         systemPrompt += voiceCapabilityRule;
     }
     
@@ -1258,13 +1642,6 @@ try {
 
 // Add this above startServer()
 const CONFIG_FILE = 'app_config.json';
-let telegramToken = process.env.TELEGRAM_BOT_TOKEN || '8831146675:AAE4LyAjvKbNgO_CpHsHmvofL25ogRsSfbg';
-let telegramChatId = '';
-let telegramGroupChatId = '-5433306866';
-let telegramUsername = 'TexoraOfficialBot';
-let lastTelegramChatId = '';
-let lastTelegramGroupChatId = '-5433306866';
-let lastTelegramGroupTitle = 'مجموعة إدارة وعملاء Texora';
 let hasSavedSession = false;
 let isStartingWhatsApp = false;
 let reconnectTimer: NodeJS.Timeout | null = null;
@@ -1275,13 +1652,10 @@ try {
         if (parsed.adminNumber && parsed.adminNumber.trim()) adminNumber = parsed.adminNumber;
         else adminNumber = process.env.ADMIN_NUMBER || '201093625469';
         if (parsed.globalInstructions) globalInstructions = parsed.globalInstructions;
-        if (parsed.telegramToken) telegramToken = parsed.telegramToken;
-        if (parsed.telegramChatId) telegramChatId = parsed.telegramChatId;
-        if (parsed.telegramGroupChatId) telegramGroupChatId = parsed.telegramGroupChatId;
-        if (parsed.lastTelegramGroupChatId) lastTelegramGroupChatId = parsed.lastTelegramGroupChatId;
-        if (parsed.lastTelegramGroupTitle) lastTelegramGroupTitle = parsed.lastTelegramGroupTitle;
+        if (parsed.botName) botName = parsed.botName;
+        if (parsed.teamGroupId) teamGroupId = parsed.teamGroupId;
         if (parsed.hasSavedSession !== undefined) hasSavedSession = !!parsed.hasSavedSession;
-        console.log(`Loaded configuration from disk. Telegram Group Chat ID: ${telegramGroupChatId || lastTelegramGroupChatId || 'None'}`);
+        console.log(`Loaded configuration from disk. Bot Name: "${botName}", Admin: ${adminNumber}, Group: ${teamGroupId}`);
     }
 } catch(e) {
     console.error("Failed to load config:", e);
@@ -1291,11 +1665,8 @@ const saveConfigToDisk = () => {
     fs.promises.writeFile(CONFIG_FILE, JSON.stringify({
         adminNumber,
         globalInstructions,
-        telegramToken,
-        telegramChatId,
-        telegramGroupChatId: telegramGroupChatId || lastTelegramGroupChatId,
-        lastTelegramGroupChatId,
-        lastTelegramGroupTitle,
+        botName,
+        teamGroupId,
         hasSavedSession
     }, null, 2)).catch(e => console.error("Could not save config:", e));
 };
@@ -1364,6 +1735,22 @@ function killOrphanedChromeProcesses() {
 }
 
 async function startServer() {
+    // Load cloud bot configuration from Supabase
+    try {
+        const dbConfig = await getBotConfig();
+        if (dbConfig) {
+            if (dbConfig.bot_name) botName = dbConfig.bot_name;
+            if (dbConfig.admin_number) adminNumber = dbConfig.admin_number;
+            if (dbConfig.team_group_id) teamGroupId = dbConfig.team_group_id;
+            if (dbConfig.system_prompt && dbConfig.system_prompt.trim().length > 20) {
+                globalInstructions = dbConfig.system_prompt;
+            }
+            console.log(`[Supabase Bot Config Loaded] Bot Name: "${botName}", Admin: ${adminNumber}, Group: ${teamGroupId}`);
+        }
+    } catch (e: any) {
+        console.warn("[Supabase Bot Config Load Warning]:", e?.message || e);
+    }
+
     const app = express();
     const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
@@ -1408,12 +1795,14 @@ async function startServer() {
         socket.emit('config', {
             adminNumber,
             globalInstructions,
-            hasTelegram: !!telegramBot,
-            telegramToken,
-            telegramUsername,
-            telegramChatId,
-            telegramGroupChatId: telegramGroupChatId || lastTelegramGroupChatId,
-            lastGroupTitle: lastTelegramGroupTitle
+            botName,
+            teamGroupId
+        });
+        socket.emit('whatsapp-status', {
+            connected: isWhatsappConnected,
+            qr: qrCodeDataUrl,
+            hasSavedSession,
+            isReady: !!whatsappClient || isStartingWhatsApp
         });
     });
 
@@ -1422,6 +1811,7 @@ async function startServer() {
         res.json({
             status: 'ok',
             uptime: Math.round(process.uptime()),
+            botName,
             whatsappConnected: isWhatsappConnected,
             hasSavedSession: hasSavedSession,
             clientsTotal: Object.keys(clientsDB).length,
@@ -1430,322 +1820,6 @@ async function startServer() {
         });
     });
     app.get('/healthz', (req, res) => res.status(200).send('OK'));
-
-    let activeTelegramToken = '';
-    let isStartingTelegram = false;
-
-    const startTelegram = async (token: string) => {
-        if (!token || !token.trim()) return;
-        if (telegramBot && activeTelegramToken === token) {
-            return;
-        }
-        if (isStartingTelegram) return;
-        isStartingTelegram = true;
-
-        try {
-            if (telegramBot) {
-                try {
-                    await telegramBot.stopPolling({ cancel: true });
-                } catch {}
-                telegramBot = null;
-            }
-
-            activeTelegramToken = token;
-            const bot = new TelegramBot(token, {
-                polling: {
-                    interval: 300,
-                    autoStart: true,
-                    params: { timeout: 10 }
-                }
-            });
-            telegramBot = bot;
-
-            // Clear any webhook that may interfere with getUpdates
-            try {
-                await bot.deleteWebHook();
-            } catch {}
-
-            bot.on('polling_error', (error: any) => {
-                const msg = error?.message || String(error);
-                if (msg.includes('409') || msg.includes('Conflict')) {
-                    // Suppress and handle 409 conflict gracefully during server reloads
-                    console.warn("[Telegram Polling] Handled temporary 409 Conflict smoothly (polling will re-sync)");
-                    return;
-                }
-                console.error("Telegram Polling Error:", msg);
-            });
-            
-            // Fetch actual bot username from Telegram API
-            bot.getMe().then((me) => {
-                if (me && me.username) {
-                    telegramUsername = me.username;
-                    console.log(`[Telegram] Connected as @${telegramUsername} (${me.first_name})`);
-                    io.emit('config', { adminNumber, globalInstructions, hasTelegram: true, telegramToken, telegramUsername });
-                }
-            }).catch(err => console.warn("[Telegram] getMe error:", err?.message || err));
-
-            const processTelegramIncomingMessage = async (chatId: string, text: string, isChannelOrEdit: boolean = false, msgObj: any = null) => {
-                if (!text || !text.trim()) return;
-
-                const isGroup = msgObj && (msgObj.chat?.type === 'group' || msgObj.chat?.type === 'supergroup' || chatId.startsWith('-'));
-                const botUsername = telegramUsername ? telegramUsername.toLowerCase() : '';
-                const isMentioned = botUsername && text.toLowerCase().includes(`@${botUsername}`);
-
-                // Remember Telegram Chat ID automatically if private or admin
-                lastTelegramChatId = chatId;
-                if (isGroup) {
-                    lastTelegramGroupChatId = chatId;
-                    telegramGroupChatId = chatId;
-                    if (msgObj?.chat?.title) lastTelegramGroupTitle = msgObj.chat.title;
-                    saveConfigToDisk();
-                    if (ioInstance) {
-                        ioInstance.emit('config', { 
-                            adminNumber, 
-                            globalInstructions, 
-                            hasTelegram: !!telegramBot, 
-                            telegramToken, 
-                            telegramUsername,
-                            telegramChatId,
-                            telegramGroupChatId,
-                            lastGroupTitle: lastTelegramGroupTitle 
-                        });
-                    }
-                }
-                if (!telegramChatId && !isGroup) {
-                    telegramChatId = chatId;
-                    saveConfigToDisk();
-                }
-
-                const senderId = 'tel_' + chatId;
-
-                if (text.includes('تغيير التعليمات')) {
-                    const match = text.match(/تغيير التعليمات(?: الى| إلى)?\s*(.*)/);
-                    if (match && match[1]) {
-                        globalInstructions = match[1].trim();
-                        saveConfigToDisk();
-                        io.emit('config', { adminNumber, globalInstructions, hasTelegram: !!telegramBot });
-                        telegramBot?.sendMessage(chatId, "تم حفظ التعليمات الجديدة للمستخدمين الآخرين بنجاح ✔️").catch(() => {});
-                        return;
-                    }
-                }
-
-                // Telegram Admin Quick Commands for QR code and bot status
-                const cleanCmd = text.trim().toLowerCase();
-                if (['/qr', 'qr', 'كود', 'باركود', 'كود واتساب', 'رمز واتساب', '/status', 'الحالة'].includes(cleanCmd)) {
-                    if (isWhatsappConnected) {
-                        telegramBot?.sendMessage(chatId, '✅ *واتساب متصل ويعمل بنجاح سحابياً 24/7!* 🟢', { parse_mode: 'Markdown' }).catch(() => {});
-                        return;
-                    }
-                    if (qrCodeDataUrl) {
-                        try {
-                            const base64Data = qrCodeDataUrl.replace(/^data:image\/png;base64,/, '');
-                            const qrBuffer = Buffer.from(base64Data, 'base64');
-                            telegramBot?.sendPhoto(chatId, qrBuffer, {
-                                caption: '📱 *رمز مسح واتساب الحالي*\nامسحه من تطبيق واتساب بهاتفك لربط البوت السحابي فوراً 🚀',
-                                parse_mode: 'Markdown'
-                            }).catch(() => {});
-                            return;
-                        } catch (e) {}
-                    }
-                    telegramBot?.sendMessage(chatId, '⏳ جاري توليد رمز الـ QR لواتساب أو استعادة الجلسة، يرجى الانتظار ثوانٍ قليلة...').catch(() => {});
-                    return;
-                }
-
-                const senderUsername = (msgObj?.from?.username || '').toLowerCase();
-                const isOtherBot = (msgObj?.from?.is_bot && senderUsername !== telegramUsername?.toLowerCase()) || 
-                                   senderUsername.includes('trxorawed') || 
-                                   senderUsername.includes('bot');
-
-                // Detect if message contains client order details from @trxorawed_bot, website bot, or group member
-                const phoneMatch = text.match(/(?:\+?20|0)?1[0125]\d{8}|\+?\d{10,14}/);
-                const hasOrderIndicator = isOtherBot || /طلب|عميل|موقع|خدمة|مشروع|اسم|رقم|تواصل|هاتف|موبايل|تفاصيل|المنتج|الاسم|الرقم|order|lead|client|customer|phone/i.test(text);
-
-                if (phoneMatch && hasOrderIndicator) {
-                    let rawPhone = phoneMatch[0].replace(/\D/g, '');
-                    if (rawPhone.startsWith('0')) rawPhone = '2' + rawPhone;
-
-                    // Extract Name
-                    const nameMatch = text.match(/(?:الاسم|اسم العميل|العميل|Name|Client|Customer)\s*[:=]?\s*([^\n\r,]+)/i);
-                    const extractedName = nameMatch ? nameMatch[1].trim() : (msgObj?.from?.first_name || 'عميل جديد');
-
-                    // Extract Product / Service
-                    const productMatch = text.match(/(?:المنتج|الخدمة|اسم المنتج|المشروع|الطلب|Product|Service|Project|Order)\s*[:=]?\s*([^\n\r,]+)/i);
-                    const extractedProduct = productMatch ? productMatch[1].trim() : 'خدمات وموقع برمجية';
-
-                    // Extract Details
-                    const detailsMatch = text.match(/(?:التفاصيل|تفاصيل المنتج|المواصفات|المطلوب|الملاحظات|Details|Specs|Notes)\s*[:=]?\s*([\s\S]+)/i);
-                    const extractedDetails = detailsMatch ? detailsMatch[1].trim() : text;
-
-                    const targetId = `${rawPhone}@c.us`;
-                    const leadRecord: ClientLead = {
-                        id: `ord_tg_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-                        name: extractedName,
-                        phone: rawPhone,
-                        request: `[المنتج: ${extractedProduct}] - ${extractedDetails}`,
-                        date: new Date().toISOString(),
-                        lastUpdated: new Date().toISOString(),
-                        source: senderUsername ? `@${senderUsername}` : 'مجموعة تلجرام',
-                        status: isWhatsappConnected 
-                            ? 'تم استقبال الرسالة بالتليجرام وجاري الدردشة التلقائية على الواتساب' 
-                            : 'تم حفظ الطلب بالسيرفر من التليجرام (الواتساب غير متصل حالياً)'
-                    };
-
-                    clientsDB[rawPhone] = leadRecord;
-                    safeSaveJSON('clients_db.json', clientsDB);
-                    if (!chatHistories[targetId]) chatHistories[targetId] = [];
-                    chatHistories[targetId].push({ 
-                        role: 'system', 
-                        content: `[تم استلام هذا الطلب من التلجرام عبر @${senderUsername || 'البوت'}]\nالاسم: ${extractedName}\nالهاتف: +${rawPhone}\nالمنتج: ${extractedProduct}\nالتفاصيل: ${extractedDetails}` 
-                    });
-                    safeSaveJSON('db_history.json', chatHistories);
-
-                    if (ioInstance) ioInstance.emit('new-lead', leadRecord);
-                    console.log(`[Telegram Order Detected from @${senderUsername}] Name: ${extractedName}, Phone: +${rawPhone}, Product: ${extractedProduct}`);
-
-                    // Send Telegram Confirmation back (safe plain text formatting)
-                    const confirmMessage = `✅ تم استلام طلب العميل المرسل عبر (@${senderUsername || 'trxorawed_bot'}) بنجاح!\n\n👤 اسم العميل: ${extractedName}\n📞 رقم العميل: +${rawPhone}\n📦 المنتج: ${extractedProduct}\n📝 التفاصيل: ${extractedDetails}\n\n📱 جاري بدء المحادثة والتواصل التلقائي فوراً مع العميل على الواتساب عبر الرقم (+${rawPhone})...`;
-                    telegramBot?.sendMessage(chatId, confirmMessage).catch(err => {
-                        console.error("[Telegram Send Order Confirm Error]:", err?.message || err);
-                    });
-
-                    // Trigger WhatsApp Outreach immediately
-                    if (whatsappClient && isWhatsappConnected) {
-                        try {
-                            const promptForWelcome = `العميل قدم طلباً باسم (${extractedName}) لمنتج/خدمة (${extractedProduct}) وتفاصيل (${extractedDetails}) عبر التلجرام من (@${senderUsername}).\n\nصيغ رسالة ترحيبية هادئة وقصيرة ومريحة جداً (سطرين إلى 3 أسطر) باسم شركة Texora للبرمجيات، ترحب به وتؤكد له استلام طلب الخدمة وتسأله بكل بساطة عن فكرته لتحديد المواصفات بوضوح.`;
-                            const initialReply = await callGroqLLM(targetId, promptForWelcome, false, rawPhone);
-                            if (initialReply) {
-                                await whatsappClient.sendMessage(targetId, initialReply + "\u200B");
-                                console.log(`[Telegram Bridge] WhatsApp opening message sent to +${rawPhone}`);
-                                telegramBot?.sendMessage(chatId, `📲 تم إرسال أول رسالة ترحيبية للعميل (${extractedName}) على الواتساب بنجاح! ✨`).catch(() => {});
-                            }
-                        } catch (e) {
-                            console.error("[Telegram Bridge WA Error]:", e);
-                        }
-                    }
-                    return;
-                }
-
-                if (!isChannelOrEdit) {
-                    // Treat Telegram Groups as Company Administration / Management
-                    let cleanText = text;
-                    if (botUsername) {
-                        cleanText = cleanText.replace(new RegExp(`@${botUsername}`, 'gi'), '').trim();
-                    }
-                    console.log(`[Telegram Msg Received] ChatId: ${chatId}, Msg: "${text}", isGroup: ${isGroup}`);
-
-                    // Pass isAdmin = isGroup || (chatId === telegramChatId || chatId === lastTelegramChatId)
-                    const isGroupAdmin = isGroup || (chatId === telegramChatId || chatId === lastTelegramChatId);
-                    
-                    // Call AI engine
-                    const reply = await callAI(senderId, cleanText || text, isGroupAdmin);
-                    if (reply) {
-                        console.log(`[Telegram AI Reply Generated] ChatId: ${chatId}, Reply length: ${reply.length}`);
-                        const replyOpts = msgObj?.message_id ? { reply_to_message_id: msgObj.message_id } : undefined;
-                        telegramBot?.sendMessage(chatId, reply, replyOpts).catch((err) => {
-                            console.warn("[Telegram Group Reply-To Error, Retrying without reply_to_message_id]:", err?.message || err);
-                            telegramBot?.sendMessage(chatId, reply).catch(err2 => {
-                                console.error("[Telegram Direct Send Error]:", err2?.message || err2);
-                            });
-                        });
-
-                        // Autonomous Voice Note Reply on Telegram (Lulwa Voice via Groq)
-                        const shouldSendTgVoice = !!(msgObj?.voice || msgObj?.audio || /رد.*صوت|ابعت.*فويس|اتكلم.*صوت|عايز.*صوت|سجل.*صوت|رد.*تسجيل|فويس|ريكورد/i.test(cleanText || text || ''));
-                        if (shouldSendTgVoice) {
-                            try {
-                                console.log(`[Telegram Voice TTS] Generating Lulwa voice reply for ${chatId}...`);
-                                const { oggBuffer } = await generateVoiceAudio(reply, 'lulwa');
-                                telegramBot?.sendVoice(chatId, oggBuffer).catch(e => console.warn("[Telegram SendVoice Error]:", e?.message));
-                            } catch (tgVoiceErr: any) {
-                                console.warn("[Telegram Voice TTS Warning]:", tgVoiceErr?.message || tgVoiceErr);
-                            }
-                        }
-                    }
-                }
-            };
-
-            bot.on('message', async (msg) => {
-                try {
-                    if (!msg || !msg.chat) return;
-                    const senderUsername = (msg.from?.username || '').toLowerCase();
-                    // Do not respond to self messages sent by this bot
-                    if (senderUsername && telegramUsername && senderUsername === telegramUsername.toLowerCase()) {
-                        return;
-                    }
-                    const chatId = msg.chat.id.toString();
-                    let text = msg.text || msg.caption || '';
-
-                    // Transcribe incoming Telegram Voice / Audio Note
-                    if ((msg.voice || msg.audio) && !text.trim()) {
-                        try {
-                            const fileId = msg.voice ? msg.voice.file_id : msg.audio?.file_id;
-                            if (fileId) {
-                                console.log(`[Telegram Voice] Downloading voice note from @${senderUsername || 'anon'}...`);
-                                const fileLink = await bot.getFileLink(fileId);
-                                const fileResp = await fetch(fileLink);
-                                const audioBuffer = Buffer.from(await fileResp.arrayBuffer());
-                                const transcribed = await transcribeAudio(audioBuffer, 'audio/ogg');
-                                if (transcribed && transcribed.trim()) {
-                                    text = transcribed.trim();
-                                    console.log(`[Telegram STT Success] Transcribed: "${text}"`);
-                                }
-                            }
-                        } catch (tgVoiceErr: any) {
-                            console.error("[Telegram Voice STT Error]:", tgVoiceErr?.message || tgVoiceErr);
-                        }
-                    }
-
-                    if (!text || !text.trim()) return;
-                    console.log(`[Telegram Bot Ingest] Received from @${senderUsername || 'anon'} in chat ${chatId}: "${text.slice(0, 80)}"`);
-                    await processTelegramIncomingMessage(chatId, text, false, msg);
-                } catch(err: any) {
-                    console.error("[Telegram Msg Handler Error]:", err?.message || err);
-                }
-            });
-
-            bot.on('channel_post', async (msg) => {
-                try {
-                    if (!msg || !msg.chat) return;
-                    const chatId = msg.chat.id.toString();
-                    const text = msg.text || msg.caption || '';
-                    await processTelegramIncomingMessage(chatId, text, true, msg);
-                } catch(err: any) {
-                    console.error("[Telegram Channel Post Handler Error]:", err?.message || err);
-                }
-            });
-
-            bot.on('edited_message', async (msg) => {
-                try {
-                    if (!msg || !msg.chat) return;
-                    const chatId = msg.chat.id.toString();
-                    const text = msg.text || msg.caption || '';
-                    await processTelegramIncomingMessage(chatId, text, true, msg);
-                } catch(err: any) {
-                    console.error("[Telegram Edited Message Handler Error]:", err?.message || err);
-                }
-            });
-
-            bot.on('edited_channel_post', async (msg) => {
-                const chatId = msg.chat.id.toString();
-                await processTelegramIncomingMessage(chatId, msg.text || msg.caption || '', true, msg);
-            });
-        } finally {
-            isStartingTelegram = false;
-        }
-    };
-
-    if (telegramToken) {
-        startTelegram(telegramToken);
-    }
-
-    io.on('connection', (socket) => {
-        socket.emit('whatsapp-status', { 
-            connected: isWhatsappConnected, 
-            qr: qrCodeDataUrl,
-            hasSavedSession,
-            isReady: !!whatsappClient || isStartingWhatsApp
-        });
-        socket.emit('config', { adminNumber, globalInstructions, hasTelegram: !!telegramBot, telegramToken, telegramUsername });
-    });
 
     const scheduleReconnect = (delayMs = 4000) => {
         if (reconnectTimer) clearTimeout(reconnectTimer);
@@ -1823,25 +1897,6 @@ async function startServer() {
 
                 // Sync QR Code to Supabase in real-time
                 updateBotState({ qr_code: qrCodeDataUrl, is_connected: false }).catch(() => {});
-
-                // Auto-forward QR code photo directly to Telegram Management Group (throttled to once per minute)
-                if (telegramBot && (Date.now() - lastTelegramQrSentAt > 60000)) {
-                    lastTelegramQrSentAt = Date.now();
-                    try {
-                        const qrBuffer = await QRCode.toBuffer(qr, { width: 450, margin: 2 });
-                        const targetGroup = telegramGroupChatId || lastTelegramGroupChatId || '-5433306866';
-                        const caption = '📱 *رمز تسجيل دخول واتساب اللحظي (WhatsApp Web QR)*\n\n' +
-                            '🔹 افتح واتساب على هاتفك > *الأجهزة المرتبطة*\n' +
-                            '🔹 اضغط *ربط جهاز* وامسح هذا الرمز ضوئياً.\n\n' +
-                            '⚡ *الرمز يتجدد تلقائياً كل 20 ثانية لضمان قبول الربط الفوري!*';
-                        telegramBot.sendPhoto(targetGroup, qrBuffer, { caption, parse_mode: 'Markdown' }).catch((err: any) => {
-                            console.warn("[Telegram QR Send Warning]:", err?.message || err);
-                        });
-                        console.log(`[Telegram] WhatsApp QR Photo sent to group: ${targetGroup}`);
-                    } catch (e: any) {
-                        console.warn("[Telegram QR Generation Error]:", e?.message || e);
-                    }
-                }
             });
 
             whatsappClient.on('authenticated', () => {
@@ -2043,9 +2098,181 @@ async function startServer() {
                         // Suppress puppeteer getChat glitches on ephemeral or special messages
                     }
 
-                    // Ignore group chats
+                    // Check if group chat
                     const isGroup = (chat && chat.isGroup) || fromStr.includes('@g.us') || toStr.includes('@g.us');
                     if (isGroup) {
+                        const targetGroup = teamGroupId || '120363412539964956@g.us';
+                        const isTeamGroup = fromStr.includes('120363412539964956') || toStr.includes('120363412539964956') || fromStr === targetGroup || toStr === targetGroup;
+                        if (isTeamGroup) {
+                            const senderAuthor = msg.author || msg.from;
+                            let cleanSenderPhone = (senderAuthor || '').replace(/@.*$/, '').replace(/\D/g, '');
+                            if (cleanSenderPhone.startsWith('0')) cleanSenderPhone = '2' + cleanSenderPhone;
+                            if (!cleanSenderPhone.startsWith('2') && cleanSenderPhone.length === 10) cleanSenderPhone = '20' + cleanSenderPhone;
+                            
+                            let senderName = 'مهندس في الفريق';
+                            try {
+                                const contact = await msg.getContact();
+                                if (contact && (contact.pushname || contact.name)) {
+                                    senderName = contact.pushname || contact.name;
+                                }
+                            } catch {}
+
+                            const text = (activeUserMessage || '').trim();
+
+                            // 1. /تم or تم (Claim project)
+                            if (/^\/?(?:تم|استلام|استلمت|شغال)(?:\s+(.*))?$/i.test(text)) {
+                                let orderCode = '';
+                                const match = text.match(/^\/?(?:تم|استلام|استلمت|شغال)(?:\s+(.*))?$/i);
+                                if (match && match[1]) {
+                                    orderCode = match[1].trim();
+                                }
+
+                                if (!orderCode && msg.hasQuotedMsg) {
+                                    try {
+                                        const quoted = await msg.getQuotedMessage();
+                                        const qText = quoted?.body || '';
+                                        const codeMatch = qText.match(/#?(ORD-\d+)/i) || qText.match(/كود الطلب[:\s]+#?([A-Za-z0-9-]+)/i);
+                                        if (codeMatch) orderCode = codeMatch[1];
+                                    } catch {}
+                                }
+
+                                const assignRes = await assignOrderToEmployee(orderCode || '', cleanSenderPhone, senderName);
+                                if (assignRes.success && assignRes.order) {
+                                    const resp = 
+`🚀 *تم اعتماد استلام المشروع بنجاح!*
+━━━━━━━━━━━━━━━━━━━━
+📌 *كود المشروع:* #${assignRes.order.order_code}
+👤 *المستلم:* ${senderName} (+${cleanSenderPhone})
+💼 *الخدمة:* ${assignRes.order.service_title}
+💰 *الميزانية:* ${assignRes.order.budget || 'تمت مناقشتها'}
+⏱️ *مدة التسليم:* ${assignRes.order.expected_duration || 'خلال أسبوعين'}
+━━━━━━━━━━━━━━━━━━━━
+بالتوفيق يا هندسة! عاش مجهودك. 
+عند الانتهاء من المشروع أرسل:
+\`/انتهيت ${assignRes.order.order_code}\` أو رد على هذه الرسالة بـ \`/انتهيت\`.`;
+                                    await msg.reply(resp).catch(() => whatsappClient.sendMessage(targetGroup, resp));
+
+                                    const cleanAdmin = (adminNumber || '201093625469').replace(/\D/g, '');
+                                    if (cleanAdmin && cleanAdmin !== cleanSenderPhone) {
+                                        await whatsappClient.sendMessage(`${cleanAdmin}@c.us`, 
+                                            `📢 *إشعار إدارة:* قام المهندس ${senderName} (+${cleanSenderPhone}) باستلام المشروع #${assignRes.order.order_code} (${assignRes.order.service_title}).`
+                                        ).catch(() => {});
+                                    }
+                                } else {
+                                    await msg.reply(`⚠️ ${assignRes.message}`).catch(() => {});
+                                }
+                                return;
+                            }
+
+                            // 2. /انتهيت or انتهيت (Complete project)
+                            if (/^\/?(?:انتهيت|خلصت|تم_الانجاز|تم_التسليم|سلمت)(?:\s+(.*))?$/i.test(text)) {
+                                let orderCode = '';
+                                const match = text.match(/^\/?(?:انتهيت|خلصت|تم_الانجاز|تم_التسليم|سلمت)(?:\s+(.*))?$/i);
+                                if (match && match[1]) {
+                                    orderCode = match[1].trim();
+                                }
+
+                                if (!orderCode && msg.hasQuotedMsg) {
+                                    try {
+                                        const quoted = await msg.getQuotedMessage();
+                                        const qText = quoted?.body || '';
+                                        const codeMatch = qText.match(/#?(ORD-\d+)/i);
+                                        if (codeMatch) orderCode = codeMatch[1];
+                                    } catch {}
+                                }
+
+                                const compRes = await completeOrder(orderCode || '', cleanSenderPhone);
+                                if (compRes.success && compRes.order) {
+                                    const resp = 
+`🎉 *ألف مبروك! تم توثيق إنجاز وتسليم المشروع بنجاح!*
+━━━━━━━━━━━━━━━━━━━━
+📌 *كود المشروع:* #${compRes.order.order_code}
+👤 *البطل المُنجز:* ${compRes.order.assigned_to_name || senderName}
+💼 *الخدمة:* ${compRes.order.service_title}
+📅 *تاريخ التسليم:* ${new Date().toLocaleDateString('ar-EG')}
+━━━━━━━━━━━━━━━━━━━━
+عاش يا شباب، تم تسجيل الإنجاز في Supabase وتحديث إحصائيات الفريق بنجاح! 👏✨`;
+                                    await msg.reply(resp).catch(() => whatsappClient.sendMessage(targetGroup, resp));
+
+                                    const cleanAdmin = (adminNumber || '201093625469').replace(/\D/g, '');
+                                    if (cleanAdmin) {
+                                        await whatsappClient.sendMessage(`${cleanAdmin}@c.us`, 
+                                            `🎉 *إشعار إدارة:* تم إنجاز وتسليم المشروع #${compRes.order.order_code} بنجاح بواسطة ${compRes.order.assigned_to_name || senderName}!`
+                                        ).catch(() => {});
+                                    }
+                                } else {
+                                    await msg.reply(`⚠️ ${compRes.message}`).catch(() => {});
+                                }
+                                return;
+                            }
+
+                            // 3. /المشاريع or /المشاريع_المعلقة
+                            if (/^\/?(?:المشاريع|المشاريع_المعلقة|المشاريع_المتاحة|طلبات_جديدة)/i.test(text)) {
+                                const report = await getOrdersReport();
+                                if (report.pending.length === 0) {
+                                    await msg.reply(`✅ لا توجد مشاريع معلقة حالياً، كل المشاريع قيد التنفيذ أو مكتملة!`).catch(() => {});
+                                    return;
+                                }
+
+                                let listText = `📋 *المشاريع المتاحة للاستلام حالياً (${report.pending.length}):*\n━━━━━━━━━━━━━━━━━━━━\n`;
+                                report.pending.slice(0, 10).forEach((o, i) => {
+                                    listText += `${i + 1}️⃣ *#${o.order_code}*: ${o.service_title}\n   💰 الميزانية: ${o.budget || 'غير محدد'} | ⏱️ المدة: ${o.expected_duration || 'أسبوعين'}\n   👤 العميل: ${o.client_name}\n\n`;
+                                });
+                                listText += `━━━━━━━━━━━━━━━━━━━━\n👉 للاستلام أرسل: \`/تم [كود_المشروع]\``;
+                                await msg.reply(listText).catch(() => {});
+                                return;
+                            }
+
+                            // 4. /مهامي or /مشاريعي
+                            if (/^\/?(?:مهامي|مشاريعي|شغلي)/i.test(text)) {
+                                const report = await getOrdersReport();
+                                const myOrders = report.inProgress.filter(o => o.assigned_to === cleanSenderPhone || (cleanSenderPhone.length >= 8 && o.assigned_to && o.assigned_to.includes(cleanSenderPhone)));
+                                if (myOrders.length === 0) {
+                                    await msg.reply(`ليس لديك أي مشاريع جارية قيد التنفيذ حالياً. للاستلام تصفح \`/المشاريع_المعلقة\`.`).catch(() => {});
+                                    return;
+                                }
+                                let myText = `📌 *مشاريعك الجارية حالياً (${myOrders.length}):*\n━━━━━━━━━━━━━━━━━━━━\n`;
+                                myOrders.forEach((o, i) => {
+                                    myText += `${i + 1}️⃣ *#${o.order_code}*: ${o.service_title}\n   💰 الميزانية: ${o.budget} | ⏱️ مدة التسليم: ${o.expected_duration}\n   📝 ${o.details}\n\n`;
+                                });
+                                myText += `━━━━━━━━━━━━━━━━━━━━\nعند الانتهاء أرسل: \`/انتهيت [كود_المشروع]\``;
+                                await msg.reply(myText).catch(() => {});
+                                return;
+                            }
+
+                            // 5. /احصائيات or /إحصائيات_الفريق
+                            if (/^\/?(?:احصائيات|إحصائيات|تقرير_الفريق)/i.test(text)) {
+                                const report = await getOrdersReport();
+                                const employees = await getAllEmployees();
+                                let statsText = `📊 *إحصائيات إنجاز فريق عمل Texora:*\n━━━━━━━━━━━━━━━━━━━━\n`;
+                                statsText += `🟢 مشاريع مكتملة: ${report.completed.length}\n`;
+                                statsText += `🔵 مشاريع قيد التنفيذ: ${report.inProgress.length}\n`;
+                                statsText += `🟡 مشاريع في انتظار الاستلام: ${report.pending.length}\n`;
+                                statsText += `📦 إجمالي المشاريع: ${report.total}\n━━━━━━━━━━━━━━━━━━━━\n`;
+                                if (employees.length > 0) {
+                                    statsText += `🏆 *أبطال الفريق الأكثر إنجازاً:*\n`;
+                                    employees.slice(0, 5).forEach((e, idx) => {
+                                        statsText += `${idx + 1}. ${e.name}: أتم (${e.tasks_completed || 0}) مهمة | جاري: (${e.tasks_in_progress || 0})\n`;
+                                    });
+                                }
+                                await msg.reply(statsText).catch(() => {});
+                                return;
+                            }
+
+                            // 6. /اوامر or /مساعدة
+                            if (/^\/?(?:اوامر|أوامر|مساعدة|help)/i.test(text)) {
+                                const helpText = 
+`🤖 *أوامر بوت فريق العمل Texora:*
+━━━━━━━━━━━━━━━━━━━━
+👉 \`/تم [كود_المشروع]\` : استلام مشروع للبدء بالعمل عليه (أو بالرد على رسالة المشروع بـ /تم).
+👉 \`/انتهيت [كود_المشروع]\` : تسجيل إنجاز وتسليم المشروع وتحديث إحصائياتك.
+👉 \`/المشاريع_المعلقة\` : عرض قائمة المشاريع الجديدة المتاحة للاستلام.
+👉 \`/مهامي\` : عرض المشاريع المسندة إليك حالياً.
+👉 \`/احصائيات\` : إحصائيات الفريق والمشاريع المكتملة والجارية.`;
+                                await msg.reply(helpText).catch(() => {});
+                                return;
+                            }
+                        }
                         return;
                     }
 
@@ -2057,6 +2284,7 @@ async function startServer() {
                     // Identify owner / self / admin
                     const myUserNumber = (whatsappClient?.info?.wid?.user || '').replace(/\D/g, '');
                     const cleanAdminNumber = (adminNumber || '201093625469').replace(/\D/g, '');
+                    const cleanSenderPhone = (fromStr || '').replace(/\D/g, '');
 
                     const isMessageToSelf = (myUserNumber && chatUser === myUserNumber) ||
                                             (cleanAdminNumber && chatUser === cleanAdminNumber) ||
@@ -2067,32 +2295,215 @@ async function startServer() {
                         return;
                     }
 
+                    // Strict admin verification: ONLY verified admin phone or LID
                     const isFromAdmin = (cleanAdminNumber && (
                         conversationId.includes(cleanAdminNumber) || 
                         chatUser === cleanAdminNumber ||
-                        fromStr.includes(cleanAdminNumber)
-                    )) || fromStr.includes('175076238438558') || chatUser.includes('175076238438558') || activeUserMessage.includes('انا المدير') || activeUserMessage.includes('أنا المدير') || (isMessageToSelf && msg.fromMe);
+                        fromStr.includes(cleanAdminNumber) ||
+                        cleanSenderPhone === cleanAdminNumber
+                    )) || fromStr.includes('175076238438558') || chatUser.includes('175076238438558') || (isMessageToSelf && msg.fromMe);
 
                     console.log(`[WhatsApp] Processing valid message. conversationId: ${conversationId}, isAdmin: ${isFromAdmin}, isToSelf: ${isMessageToSelf}`);
 
-                    // Admin instruction change shortcut
-                    if (isFromAdmin && textBody.includes('تغيير التعليمات')) {
-                        const match = textBody.match(/تغيير التعليمات(?: الى| إلى)?\s*(.*)/);
-                        if (match && match[1]) {
-                            globalInstructions = match[1].trim();
-                            saveConfigToDisk();
-                            io.emit('config', { adminNumber, globalInstructions, hasTelegram: !!telegramBot });
-                            try {
-                                if (typeof msg.reply === 'function') {
-                                    await msg.reply("تم حفظ التعليمات الجديدة للمستخدمين الآخرين بنجاح ✔️\u200B");
-                                } else {
-                                    await whatsappClient?.sendMessage(conversationId, "تم حفظ التعليمات الجديدة للمستخدمين الآخرين بنجاح ✔️\u200B");
-                                }
-                            } catch (e) {
-                                console.error("[WhatsApp] Error sending admin reply:", e);
+                    // Strict security guard: Reject spoofed admin claims
+                    if (!isFromAdmin && (activeUserMessage.includes('انا المدير') || activeUserMessage.includes('أنا المدير') || activeUserMessage.includes('صاحب الشركه') || activeUserMessage.includes('صاحب الشركة'))) {
+                        const refusal = `أهلاً بك! نظام الحماية مشدد ومربوط حصرياً برقم هاتف الإدارة المعتمد فقط. لا يمكن قبول الأوامر الإدارية أو منح الصلاحيات إلا من رقم المدير الرسمي. إذا كان لديك استفسار أو طلب مشروع برمجي، يسعدني جداً خدمتك ومساعدتك! 🌿`;
+                        await msg.reply(refusal).catch(() => whatsappClient?.sendMessage(conversationId, refusal));
+                        return;
+                    }
+
+                    // Direct Admin Quick Actions
+                    if (isFromAdmin) {
+                        // 1. Change Bot Name
+                        const nameMatch = activeUserMessage.match(/(?:تغيير|غير|خلي|سمي)\s+(?:اسمك|اسم البوت|الاسم)\s+(?:إلى|الى|لـ|هو)?\s*(.+)/i);
+                        if (nameMatch && nameMatch[1]) {
+                            const newName = nameMatch[1].trim().replace(/["'؛.]/g, '');
+                            if (newName.length > 1 && newName.length < 30) {
+                                botName = newName;
+                                await updateBotConfig({ bot_name: newName });
+                                saveConfigToDisk();
+                                const replyMsg = `تم تغيير اسمي رسمياً إلى "${newName}" وحفظه سحابياً في Supabase بنجاح! سأعرّف نفسي بهذا الاسم من الآن فصاعداً في كل المحادثات 🌟\u200B`;
+                                await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
+                                return;
                             }
+                        }
+
+                        // 2. Change Instructions
+                        if (/تغيير التعليمات|غير تعليماتك|تعديل التعليمات/i.test(activeUserMessage)) {
+                            const match = activeUserMessage.match(/(?:تغيير التعليمات|غير تعليماتك|تعديل التعليمات)(?:\s+(?:الى|إلى|لـ))?\s*([\s\S]*)/i);
+                            if (match && match[1] && match[1].trim()) {
+                                globalInstructions = match[1].trim();
+                                saveConfigToDisk();
+                                await updateBotConfig({ system_prompt: globalInstructions });
+                                io.emit('config', { adminNumber, globalInstructions, botName, teamGroupId });
+                                const replyMsg = `تم حفظ وتحديث تعليمات الرد الجديدة بنجاح في قاعدة بيانات Supabase ✔️\u200B`;
+                                await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
+                                return;
+                            }
+                        }
+
+                        // 3. Add Employee: e.g. "اضافة موظف احمد 01012345678 مطور"
+                        if (/(?:إضافة|اضافة|أضف|اضف)\s+موظف/i.test(activeUserMessage)) {
+                            const empMatch = activeUserMessage.match(/(?:إضافة|اضافة|أضف|اضف)\s+موظف\s+([^\d]+)\s+([\d+]+)(?:\s+(.*))?/i);
+                            if (empMatch) {
+                                const empName = empMatch[1].trim();
+                                let empPhone = empMatch[2].replace(/\D/g, '');
+                                if (empPhone.startsWith('0')) empPhone = '2' + empPhone;
+                                if (!empPhone.startsWith('2') && empPhone.length === 10) empPhone = '20' + empPhone;
+                                const empRole = empMatch[3] ? empMatch[3].trim() : 'مهندس ومطور برمجيات';
+
+                                await upsertEmployee({ id: empPhone, name: empName, role: empRole });
+                                const replyMsg = `👥 *تم تسجيل الموظف الجديد بنجاح في Supabase:*\n📌 الاسم: ${empName}\n📞 الهاتف: +${empPhone}\n💼 الدور: ${empRole}\nيمكنه الآن استلام المهام في الجروب عبر أمر \`/تم\` !`;
+                                await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
+                                return;
+                            }
+                        }
+
+                        // 4. Employee Survey Trigger: "استبيان الموظفين" or "اعمل استبيان"
+                        if (/استبيان|تابع الموظفين|متابعة الموظفين|تفقد الموظفين/i.test(activeUserMessage)) {
+                            const report = await getOrdersReport();
+                            const activeProjects = report.inProgress;
+                            if (activeProjects.length === 0) {
+                                const replyMsg = `لا توجد مشاريع قيد التنفيذ حالياً لمتابعة الموظفين عليها يا فندم.`;
+                                await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
+                                return;
+                            }
+
+                            let sentCount = 0;
+                            const notified = new Set<string>();
+                            for (const o of activeProjects) {
+                                let ePhone = (o.assigned_to || '').replace(/\D/g, '');
+                                if (ePhone.startsWith('0')) ePhone = '2' + ePhone;
+                                if (!ePhone.startsWith('2') && ePhone.length === 10) ePhone = '20' + ePhone;
+                                if (!ePhone || notified.has(ePhone)) continue;
+                                notified.add(ePhone);
+                                const eName = o.assigned_to_name || 'مهندس في الفريق';
+                                const sMsg = 
+`👋 أهلاً يا باشمهندس ${eName}، معك المساعد الذكي "${botName}" من شركة Texora.
+📊 بناءً على توجيهات الإدارة لمتابعة سير المشاريع:
+📌 أنت تعمل حالياً على: #${o.order_code} (${o.service_title})
+
+حابين نطمئن على سير العمل:
+1️⃣ ما هي نسبة الإنجاز الحالية تقريباً (مثلاً: 50% أو 80%)؟
+2️⃣ هل تواجه أي صعوبات تقنية أو تحتاج أي دعم لتسليم المشروع في الموعد المحدد؟
+
+يرجى كتابة ردك هنا، وسأقوم برفع تقرير المتابعة للإدارة فوراً. بالتوفيق دائماً! 🚀`;
+
+                                if (whatsappClient) {
+                                    await whatsappClient.sendMessage(`${ePhone}@c.us`, sMsg).catch(() => {});
+                                    sentCount++;
+                                }
+                            }
+
+                            const replyMsg = `✅ تم إرسال استبيان المتابعة بنجاح إلى (${sentCount}) من مهندسي الفريق الذين يعملون على مشاريع جارية. ستصلك التحديثات فور إرسالها! 📊`;
+                            await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
                             return;
                         }
+
+                        // 5. Reports: "تقرير المشاريع" or "المشاريع" or "مين شغال"
+                        if (/تقرير المشاريع|مين شغال|المشاريع الجارية|حالة المشاريع/i.test(activeUserMessage)) {
+                            const rep = await getOrdersReport();
+                            let txt = `📊 *تقرير المشاريع الكامل (Supabase):*\n━━━━━━━━━━━━━━━━━━━━\n`;
+                            txt += `🟡 *المشاريع في انتظار الاستلام (${rep.pending.length}):*\n`;
+                            if (rep.pending.length === 0) txt += `لا توجد مشاريع معلقة.\n`;
+                            else {
+                                rep.pending.slice(0, 10).forEach((o, i) => {
+                                    txt += `${i + 1}. *#${o.order_code}*: ${o.service_title}\n   العميل: ${o.client_name} (+${o.phone}) | الميزانية: ${o.budget}\n`;
+                                });
+                            }
+                            txt += `\n🔵 *المشاريع قيد التنفيذ (${rep.inProgress.length}):*\n`;
+                            if (rep.inProgress.length === 0) txt += `لا توجد مشاريع قيد التنفيذ.\n`;
+                            else {
+                                rep.inProgress.forEach((o, i) => {
+                                    txt += `${i + 1}. *#${o.order_code}*: ${o.service_title}\n   المستلم: ${o.assigned_to_name} (+${o.assigned_to}) | استلم: ${o.assigned_at ? new Date(o.assigned_at).toLocaleDateString('ar-EG') : 'حديثاً'}\n`;
+                                });
+                            }
+                            txt += `\n🟢 *أحدث المشاريع المكتملة (${rep.completed.length}):*\n`;
+                            if (rep.completed.length === 0) txt += `لا توجد مشاريع مكتملة بعد.\n`;
+                            else {
+                                rep.completed.slice(0, 5).forEach((o, i) => {
+                                    txt += `${i + 1}. *#${o.order_code}*: ${o.service_title} (${o.assigned_to_name})\n`;
+                                });
+                            }
+                            await msg.reply(txt).catch(() => whatsappClient?.sendMessage(conversationId, txt));
+                            return;
+                        }
+
+                        // 6. Reports: "تقرير الموظفين" or "الموظفين"
+                        if (/تقرير الموظفين|فريق العمل|سجل الموظفين/i.test(activeUserMessage)) {
+                            const emps = await getAllEmployees();
+                            if (emps.length === 0) {
+                                const replyMsg = `لا يوجد موظفون مسجلون حالياً في قاعدة بيانات Supabase. يمكنك إضافة موظف عبر كتابة:\nاضافة موظف [الاسم] [الرقم] [الدور]`;
+                                await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
+                                return;
+                            }
+                            let txt = `👥 *تقرير أداء فريق عمل Texora (Supabase):*\n━━━━━━━━━━━━━━━━━━━━\n`;
+                            emps.forEach((e, idx) => {
+                                txt += `${idx + 1}. *${e.name}* (+${e.id})\n   - الدور: ${e.role || 'مهندس برمجيات'}\n   - مهام منجزة: ${e.tasks_completed || 0} ✔️ | جارية: ${e.tasks_in_progress || 0} ⏳ | إجمالي: ${e.tasks_assigned || 0}\n\n`;
+                            });
+                            await msg.reply(txt).catch(() => whatsappClient?.sendMessage(conversationId, txt));
+                            return;
+                        }
+
+                        // 7. Reports: "تقرير العملاء" or "سجل العملاء"
+                        if (/تقرير العملاء|سجل العملاء|قائمة العملاء/i.test(activeUserMessage)) {
+                            const clients = await getAllClients();
+                            if (clients.length === 0) {
+                                const replyMsg = `لا يوجد عملاء مسجلون بعد في قاعدة البيانات.`;
+                                await msg.reply(replyMsg).catch(() => whatsappClient?.sendMessage(conversationId, replyMsg));
+                                return;
+                            }
+                            let txt = `💼 *سجل عملاء Texora في Supabase (${clients.length} عميل):*\n━━━━━━━━━━━━━━━━━━━━\n`;
+                            clients.slice(0, 15).forEach((c, idx) => {
+                                txt += `${idx + 1}. *${c.name || 'عميل'}* (+${c.phone})\n   - الطلبات: ${c.orders_count || 0} | آخر تواصل: ${c.last_contact ? new Date(c.last_contact).toLocaleDateString('ar-EG') : 'اليوم'}\n   - ملاحظات: ${c.notes || 'لا يوجد'}\n\n`;
+                            });
+                            await msg.reply(txt).catch(() => whatsappClient?.sendMessage(conversationId, txt));
+                            return;
+                        }
+                    }
+
+                    // Handling Employee Progress Survey Response in Private Chat
+                    if (!isFromAdmin) {
+                        try {
+                            const report = await getOrdersReport();
+                            const activeEmpOrder = report.inProgress.find(o => 
+                                o.assigned_to === cleanSenderPhone || 
+                                (cleanSenderPhone.length >= 8 && o.assigned_to && o.assigned_to.includes(cleanSenderPhone))
+                            );
+                            if (activeEmpOrder && (/(\d+)\s*%/i.test(activeUserMessage) || /نسبة|تقدم|شغال|أنجزت|انجزت|معوقات|واجهت|تسليم|تحديث/i.test(activeUserMessage))) {
+                                const percentMatch = activeUserMessage.match(/(\d+)\s*%/);
+                                const percent = percentMatch ? parseInt(percentMatch[1], 10) : 50;
+
+                                await recordSurveyResponse({
+                                    employeeId: cleanSenderPhone,
+                                    employeeName: activeEmpOrder.assigned_to_name || 'مهندس',
+                                    orderId: activeEmpOrder.id,
+                                    orderCode: activeEmpOrder.order_code,
+                                    progressPercentage: percent,
+                                    statusUpdate: activeUserMessage
+                                });
+
+                                // Alert Admin
+                                const cleanAdmin = (adminNumber || '201093625469').replace(/\D/g, '');
+                                if (cleanAdmin && whatsappClient) {
+                                    const mgrAlert = 
+`📋 *تحديث سير عمل جديد من المهندس:*
+━━━━━━━━━━━━━━━━━━━━
+👤 *المهندس:* ${activeEmpOrder.assigned_to_name} (+${cleanSenderPhone})
+📌 *المشروع:* #${activeEmpOrder.order_code} (${activeEmpOrder.service_title})
+📊 *نسبة الإنجاز:* ${percent}%
+📝 *رسالة المهندس:*
+"${activeUserMessage}"
+━━━━━━━━━━━━━━━━━━━━
+💾 تم توثيق التقرير في استبيانات Supabase بنجاح.`;
+                                    await whatsappClient.sendMessage(`${cleanAdmin}@c.us`, mgrAlert).catch(() => {});
+                                }
+
+                                const empReply = `شكراً جزيلاً يا باشمهندس ${activeEmpOrder.assigned_to_name || ''}! تم توثيق تقرير المتابعة في Supabase وإبلاغ الإدارة بنجاح. عاش مجهودك وبانتظار تسليم المشروع الرائع 🚀✨`;
+                                await msg.reply(empReply).catch(() => whatsappClient?.sendMessage(conversationId, empReply));
+                                return;
+                            }
+                        } catch (e: any) {}
                     }
 
                     // Extract real contact number if possible
@@ -2346,26 +2757,21 @@ async function startServer() {
         }
     });
 
-    app.post('/api/config', (req, res) => {
-        const { adminNumber: phone, instructions, telegramGroupChatId: groupChatId } = req.body;
+    app.post('/api/config', async (req, res) => {
+        const { adminNumber: phone, instructions, botName: newName, teamGroupId: newGroup } = req.body;
         if (phone !== undefined) adminNumber = phone.replace(/[^0-9]/g, ''); 
         if (instructions !== undefined) globalInstructions = instructions;
-        if (groupChatId !== undefined) {
-            telegramGroupChatId = groupChatId.trim();
-            lastTelegramGroupChatId = groupChatId.trim();
-        }
+        if (newName !== undefined) botName = newName.trim();
+        if (newGroup !== undefined) teamGroupId = newGroup.trim();
         saveConfigToDisk();
+        await updateBotConfig({ admin_number: adminNumber, system_prompt: globalInstructions, bot_name: botName, team_group_id: teamGroupId });
         io.emit('config', { 
             adminNumber, 
             globalInstructions, 
-            hasTelegram: !!telegramBot, 
-            telegramToken, 
-            telegramUsername,
-            telegramChatId,
-            telegramGroupChatId: telegramGroupChatId || lastTelegramGroupChatId,
-            lastGroupTitle: lastTelegramGroupTitle 
+            botName,
+            teamGroupId
         });
-        res.json({ success: true, telegramToken, telegramGroupChatId: telegramGroupChatId || lastTelegramGroupChatId });
+        res.json({ success: true, adminNumber, botName, teamGroupId });
     });
 
     app.post('/api/whatsapp/start', async (req, res) => {
@@ -2424,39 +2830,8 @@ async function startServer() {
         res.json(result);
     });
 
-    app.post('/api/telegram', (req, res) => {
-        const { token } = req.body;
-        if (!token) return res.status(400).json({ error: 'Token required' });
-
-        telegramToken = token;
-        saveConfigToDisk();
-        startTelegram(token);
-
-        io.emit('config', { 
-            adminNumber, 
-            globalInstructions, 
-            hasTelegram: true, 
-            telegramToken, 
-            telegramUsername,
-            telegramChatId,
-            telegramGroupChatId: telegramGroupChatId || lastTelegramGroupChatId,
-            lastGroupTitle: lastTelegramGroupTitle 
-        });
-        res.json({ success: true, telegramToken, telegramUsername });
-    });
-
-    app.get('/api/telegram/info', (req, res) => {
-        res.json({
-            success: true,
-            botUsername: telegramUsername,
-            telegramChatId: telegramChatId || 'لم يتصل بعد',
-            lastChatId: lastTelegramChatId || 'لا توجد رسائل سابقة',
-            telegramGroupChatId: telegramGroupChatId || lastTelegramGroupChatId || 'لم يتم حفظ معرف مجموعة بعد',
-            lastGroupChatId: lastTelegramGroupChatId || 'لم تصل رسائل من مجموعة بعد',
-            lastGroupTitle: lastTelegramGroupTitle || 'غير معروف',
-            botConnected: !!telegramBot
-        });
-    });
+    app.post('/api/telegram', (req, res) => res.json({ success: false, message: 'Telegram integration removed' }));
+    app.get('/api/telegram/info', (req, res) => res.json({ success: false, botConnected: false }));
 
     // Master Universal Order Receiver, Webhook & Telegram Drop-in Proxy for Company Website
     const handleUniversalWebsiteOrder = async (req: express.Request, res: express.Response) => {
@@ -2651,8 +3026,7 @@ async function startServer() {
                     details: rawDetails,
                     status: 'new',
                     source: rawSource,
-                    whatsapp_notified: false,
-                    telegram_notified: !!telegramBot
+                    whatsapp_notified: false
                 });
                 console.log(`[Supabase] Order ${leadRecord.id} saved to Supabase 'orders' table.`);
             } catch (supaErr: any) {
@@ -2675,20 +3049,23 @@ async function startServer() {
             }
             console.log(`[Order API Saved Successfully] Client: ${rawName}, Phone: +${cleanNumber}, Product: ${rawProduct}`);
 
-            // Send notification to Telegram Management Group (-5433306866) and Admin
-            if (telegramBot) {
-                const targetGroup = telegramGroupChatId || lastTelegramGroupChatId || '-5433306866';
-                const tgNotify = `🚀 *طلب جديد وارد من موقع شركة TEXORA!* 🌐\n\n👤 *الاسم:* ${rawName}\n📞 *الرقم:* +${cleanNumber}\n💻 *الخدمة:* ${rawProduct}\n📝 *التفاصيل:* ${rawDetails}${rawEmail ? `\n📧 *البريد:* ${rawEmail}` : ''}\n⏰ *التاريخ:* ${new Date().toLocaleString('ar-EG')}\n\n✅ *تم توثيق وحفظ الطلب في قاعدة البيانات بنجاح!*\n📱 *${isWhatsappConnected ? 'جاري بدء المحادثة التلقائية على الواتساب فوراً...' : 'البيانات محفوظة بالسيرفر (الواتساب غير متصل حالياً)'}* ✨`;
+            // Send notification to WhatsApp Team Group and Admin
+            if (whatsappClient && isWhatsappConnected) {
+                const currentTeamGroup = teamGroupId || '120363412539964956@g.us';
+                const teamNotify = 
+`🔔 *طلب جديد وارد عبر موقع TEXORA الرسمي!* 🌐
+━━━━━━━━━━━━━━━━━━━━
+👤 *الاسم:* ${rawName}
+📞 *الرقم:* +${cleanNumber}
+💻 *الخدمة:* ${rawProduct}
+📝 *التفاصيل:* ${rawDetails}${rawEmail ? `\n📧 *البريد:* ${rawEmail}` : ''}
+⏰ *التاريخ:* ${new Date().toLocaleString('ar-EG')}
+━━━━━━━━━━━━━━━━━━━━
+_المساعد الذكي "سارة" بدأ التواصل التلقائي مع العميل عبر الواتساب._`;
 
-                if (targetGroup) {
-                    telegramBot.sendMessage(targetGroup, tgNotify, { parse_mode: 'Markdown' }).catch(err => {
-                        console.error("[Telegram Group Notify Error]:", err?.message || err);
-                    });
-                }
-
-                if (telegramChatId && telegramChatId !== targetGroup) {
-                    telegramBot.sendMessage(telegramChatId, tgNotify, { parse_mode: 'Markdown' }).catch(() => {});
-                }
+                whatsappClient.sendMessage(currentTeamGroup, teamNotify).catch((err: any) => {
+                    console.error("[Team Group Notify Error]:", err?.message || err);
+                });
             }
 
             // WhatsApp automated client outreach
@@ -2744,7 +3121,6 @@ async function startServer() {
                     totalSavedClients: Object.keys(clientsDB).length
                 },
                 notifications: {
-                    telegramNotified: !!telegramBot,
                     whatsappConnected: isWhatsappConnected
                 }
             });
@@ -3634,10 +4010,10 @@ async function startServer() {
                     status: 'active'
                 },
                 {
-                    id: 'telegram-bot',
-                    name: 'تليجرام بوت المباشر (Telegram Deep-link)',
-                    description: 'رابط مباشر يفتح محادثة تليجرام مع بوت الشركة.',
-                    status: telegramBot ? 'active' : 'disabled'
+                    id: 'whatsapp-bot',
+                    name: 'مساعد واتساب الذكي - سارة',
+                    description: 'رابط مباشر واستشارات فورية عبر الواتساب مع المستشارة سارة.',
+                    status: isWhatsappConnected ? 'active' : 'disabled'
                 }
             ]
         });
@@ -4082,7 +4458,6 @@ async function startServer() {
 
     // Background Realtime Poller for Supabase Website Orders
     let isProcessingSupabaseOrders = false;
-    const notifiedTelegramOrders = new Set<string>();
 
     const pollSupabaseOrders = async () => {
         if (isProcessingSupabaseOrders) return;
@@ -4097,33 +4472,30 @@ async function startServer() {
                 if (!cleanPhone.startsWith('2') && cleanPhone.length === 10) cleanPhone = '20' + cleanPhone;
                 const targetId = `${cleanPhone}@c.us`;
 
-                // 1. Send Telegram Notification (only once per order)
-                if (telegramBot && !order.telegram_notified && !notifiedTelegramOrders.has(order.id)) {
-                    notifiedTelegramOrders.add(order.id);
-                    const targetGroup = telegramGroupChatId || lastTelegramGroupChatId || '-5433306866';
-                    const tgText = `🚀 *طلب جديد وصل عبر موقع Texora الرسمي!*\n\n` +
-                        `👤 *العميل:* ${order.client_name}\n` +
-                        `📞 *الهاتف:* +${cleanPhone}\n` +
-                        `💼 *الشركة/البراند:* ${order.company_or_brand || 'غير محدد'}\n` +
-                        `📦 *الخدمة:* ${order.service_title}\n` +
-                        `📝 *التفاصيل:* ${order.details}\n` +
-                        `🌐 *المصدر:* ${order.source || 'الموقع الإلكتروني'}\n` +
-                        `🕒 *التاريخ:* ${new Date().toLocaleString('ar-EG')}\n\n` +
-                        `📲 ${isWhatsappConnected ? 'جاري بدء المحادثة الترحيبية على الواتساب تلقائياً... ⚡' : '⚠️ الواتساب غير متصل حالياً (الطلب محفوظ في Supabase)'}`;
+                // 1. WhatsApp Team Group & Admin Notification
+                if (whatsappClient && isWhatsappConnected) {
+                    const currentTeamGroup = teamGroupId || '120363412539964956@g.us';
+                    const groupNotice = 
+`🔔 *طلب جديد وارد عبر موقع TEXORA الرسمي!* 🌐
+━━━━━━━━━━━━━━━━━━━━
+👤 *العميل:* ${order.client_name}
+📞 *الهاتف:* +${cleanPhone}
+💼 *الخدمة:* ${order.service_title}
+📝 *التفاصيل:* ${order.details}
+⏰ *التاريخ:* ${new Date().toLocaleString('ar-EG')}
+━━━━━━━━━━━━━━━━━━━━
+_المساعد الذكي "سارة" بدأ التواصل التلقائي مع العميل عبر الواتساب لتحديد المواصفات والميزانية._`;
 
-                    try {
-                        await telegramBot.sendMessage(targetGroup, tgText, { parse_mode: 'Markdown' });
-                        console.log(`[Supabase Order Poller] Telegram notification sent for order ${order.id}`);
-                    } catch (tgErr: any) {
-                        console.warn("[Telegram Notify Error]:", tgErr?.message || tgErr);
-                    }
+                    await whatsappClient.sendMessage(currentTeamGroup, groupNotice).catch((err: any) => {
+                        console.warn("[Team Group Notify Error]:", err?.message || err);
+                    });
                 }
 
-                // 2. WhatsApp Outreach (only when WhatsApp is connected)
+                // 2. WhatsApp Client Consultation Outreach
                 if (whatsappClient && isWhatsappConnected && cleanPhone.length >= 10) {
                     try {
                         console.log(`[Supabase Order Poller] Outreach target for +${cleanPhone}: ${targetId}`);
-                        const promptForWelcome = `العميل قدم طلباً باسم (${order.client_name}) لخدمة (${order.service_title}) وتفاصيل (${order.details}) عبر موقع الشركة الرسمي.\n\nصيغ رسالة ترحيبية ودية ومريحة جداً (سطرين إلى 3 أسطر) باسم شركة Texora للبرمجيات، ترحب به وتؤكد له استلام طلبه وتسأله بكل بساطة عن فكرته لتحديد المواصفات بوضوح.`;
+                        const promptForWelcome = `العميل قدم طلباً باسم (${order.client_name}) لخدمة (${order.service_title}) وتفاصيل (${order.details}) عبر موقع الشركة الرسمي.\n\nصيغي رسالة ترحيبية ودية ومريحة جداً (سطرين إلى 3 أسطر) باسم "سارة" من شركة Texora للبرمجيات، ترحبين به وتؤكدين له استلام طلبه وتسألينه بكل بساطة وهدوء عن فكرته لنبدأ النقاش وتحديد المواصفات.`;
                         const initialReply = await callGroqLLM(targetId, promptForWelcome, false, cleanPhone);
                         if (initialReply && whatsappClient) {
                             await whatsappClient.sendMessage(targetId, initialReply + "\u200B");
@@ -4132,17 +4504,14 @@ async function startServer() {
                     } catch (waErr: any) {
                         console.error('[Supabase Order Poller WA Error]:', waErr?.message || waErr);
                     } finally {
-                        // ALWAYS mark notified so failed or unregistered numbers never cause endless locking loops!
                         await markOrderNotified(order.id, {
                             whatsapp_notified: true,
-                            telegram_notified: true,
-                            status: 'processed'
+                            status: 'in_consultation'
                         });
                     }
                 } else {
                     await markOrderNotified(order.id, {
-                        whatsapp_notified: true,
-                        telegram_notified: true
+                        whatsapp_notified: true
                     });
                 }
             }
@@ -4153,15 +4522,30 @@ async function startServer() {
         }
     };
 
-    // Poll Supabase every 20 seconds
+    // Poll Supabase orders every 20 seconds
     setInterval(pollSupabaseOrders, 20000);
+
+    // Background Runner for Scheduled Tasks (every 30 seconds)
+    setInterval(async () => {
+        try {
+            const pendingTasks = await getPendingScheduledTasks();
+            for (const task of pendingTasks) {
+                console.log(`[Scheduled Tasks] Executing task: ${task.title} (${task.id})`);
+                const cleanTarget = task.target_phone ? task.target_phone.replace(/\D/g, '') : (adminNumber || '201093625469').replace(/\D/g, '');
+                const targetJid = `${cleanTarget}@c.us`;
+                const msg = task.payload?.message || task.title;
+                if (whatsappClient && isWhatsappConnected) {
+                    await whatsappClient.sendMessage(targetJid, `⏰ *تنبيه مهمة مجدولة:* ${msg}`);
+                }
+                await markTaskExecuted(task.id);
+            }
+        } catch (e: any) {
+            console.warn(`[Scheduled Tasks Check Error]:`, e?.message || e);
+        }
+    }, 30000);
 
     const cleanupAndExit = async () => {
         console.log("Shutting down gracefully...");
-        if (telegramBot) {
-            try { await telegramBot.stopPolling({ cancel: true }); } catch (e) {}
-            telegramBot = null;
-        }
         if (whatsappClient) {
             try { await whatsappClient.destroy(); } catch (e) {}
         }
